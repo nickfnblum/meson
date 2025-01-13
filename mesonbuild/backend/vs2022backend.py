@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2014-2021 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 import os
@@ -25,9 +15,11 @@ if T.TYPE_CHECKING:
 
 
 class Vs2022Backend(Vs2010Backend):
-    def __init__(self, build: T.Optional[Build], interpreter: T.Optional[Interpreter]):
-        super().__init__(build, interpreter)
-        self.name = 'vs2022'
+
+    name = 'vs2022'
+
+    def __init__(self, build: T.Optional[Build], interpreter: T.Optional[Interpreter], gen_lite: bool = False):
+        super().__init__(build, interpreter, gen_lite=gen_lite)
         self.sln_file_version = '12.00'
         self.sln_version_comment = 'Version 17'
         if self.environment is not None:

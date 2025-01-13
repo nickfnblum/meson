@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2019 The Meson development team
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
 '''
   Generates release notes for new releases of Meson build system
 '''
@@ -20,6 +9,7 @@ import argparse
 import subprocess
 import re
 import shutil
+import datetime
 from pathlib import Path
 
 RELNOTE_TEMPLATE = '''---
@@ -73,6 +63,10 @@ def generate(relnotes, to_version, source_dir, output_dir):
     output.parent.mkdir(exist_ok=True, parents=True)
     with output.open('w', encoding='utf-8') as ofile:
         ofile.write(RELNOTE_TEMPLATE.format(title, to_version, title_suffix))
+        if not output_dir:
+            date = datetime.date.today()
+            date_str = date.strftime("%d %B %Y")
+            ofile.write(f'Meson {to_version} was released on {date_str}\n')
         for snippetfile in sorted(Path(source_dir, 'markdown/snippets').glob('*.md')):
             snippet = snippetfile.read_text(encoding='utf-8')
             ofile.write(snippet)

@@ -5,6 +5,11 @@ if not dub_exe.found()
   error('MESON_SKIP_TEST: Dub not found')
 endif
 
+dub_ver = dub_exe.version()
+if dub_ver.version_compare('>1.31.1') and dub_ver.version_compare('<1.35.0')
+  error('MESON_SKIP_TEST: Incompatible Dub version ' + dub_ver)
+endif
+
 urld_dep = dependency('urld', method: 'dub')
 
 test_exe = executable('test-urld', 'test.d', dependencies: urld_dep)

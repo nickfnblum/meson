@@ -1,18 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2019 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+from __future__ import annotations
 
-#     http://www.apache.org/licenses/LICENSE-2.0
+import typing as T
 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from mesonbuild.templates.sampleimpl import SampleImpl
-import re
+from mesonbuild.templates.sampleimpl import FileImpl
 
 
 lib_rust_template = '''#![crate_name = "{crate_file}"]
@@ -27,25 +20,28 @@ fn internal_function() -> i32 {{
 pub fn {function_name}() -> i32 {{
     return internal_function();
 }}
-'''
 
-lib_rust_test_template = '''extern crate {crate_file};
+#[cfg(test)]
+mod tests {{
+    use super::*;
 
-fn main() {{
-    println!("printing: {{}}", {crate_file}::{function_name}());
+    #[test]
+    fn test_function() {{
+        assert_eq!({function_name}(), 0);
+    }}
 }}
 '''
 
 
 lib_rust_meson_template = '''project('{project_name}', 'rust',
-  version : '{version}',
-  default_options : ['warning_level=3'])
+  version : '{version}', meson_version: '>=1.3.0',
+  default_options : ['rust_std=2021', 'warning_level=3'])
+
+rust = import('rust')
 
 shlib = static_library('{lib_name}', '{source_file}', install : true)
 
-test_exe = executable('{test_exe_name}', '{test_source_file}',
-  link_with : shlib)
-test('{test_name}', test_exe)
+rust.test('{test_name}', shlib)
 
 # Make this library usable as a Meson subproject.
 {ltoken}_dep = declare_dependency(
@@ -61,8 +57,8 @@ fn main() {{
 '''
 
 hello_rust_meson_template = '''project('{project_name}', 'rust',
-  version : '{version}',
-  default_options : ['warning_level=3'])
+  version : '{version}', meson_version: '>=1.3.0',
+  default_options : ['rust_std=2021', 'warning_level=3'])
 
 exe = executable('{exe_name}', '{source_name}',
   install : true)
@@ -71,43 +67,16 @@ test('basic', exe)
 '''
 
 
-class RustProject(SampleImpl):
-    def __init__(self, options):
-        super().__init__()
-        self.name = options.name
-        self.version = options.version
+class RustProject(FileImpl):
 
-    def create_executable(self) -> None:
-        lowercase_token = re.sub(r'[^a-z0-9]', '_', self.name.lower())
-        source_name = lowercase_token + '.rs'
-        open(source_name, 'w', encoding='utf-8').write(hello_rust_template.format(project_name=self.name))
-        open('meson.build', 'w', encoding='utf-8').write(
-            hello_rust_meson_template.format(project_name=self.name,
-                                             exe_name=lowercase_token,
-                                             source_name=source_name,
-                                             version=self.version))
+    source_ext = 'rs'
+    exe_template = hello_rust_template
+    exe_meson_template = hello_rust_meson_template
+    lib_template = lib_rust_template
+    lib_test_template = None
+    lib_meson_template = lib_rust_meson_template
 
-    def create_library(self) -> None:
-        lowercase_token = re.sub(r'[^a-z0-9]', '_', self.name.lower())
-        uppercase_token = lowercase_token.upper()
-        function_name = lowercase_token[0:3] + '_func'
-        test_exe_name = lowercase_token + '_test'
-        lib_crate_name = lowercase_token
-        lib_rs_name = lowercase_token + '.rs'
-        test_rs_name = lowercase_token + '_test.rs'
-        kwargs = {'utoken': uppercase_token,
-                  'ltoken': lowercase_token,
-                  'header_dir': lowercase_token,
-                  'function_name': function_name,
-                  'crate_file': lib_crate_name,
-                  'source_file': lib_rs_name,
-                  'test_source_file': test_rs_name,
-                  'test_exe_name': test_exe_name,
-                  'project_name': self.name,
-                  'lib_name': lowercase_token,
-                  'test_name': lowercase_token,
-                  'version': self.version,
-                  }
-        open(lib_rs_name, 'w', encoding='utf-8').write(lib_rust_template.format(**kwargs))
-        open(test_rs_name, 'w', encoding='utf-8').write(lib_rust_test_template.format(**kwargs))
-        open('meson.build', 'w', encoding='utf-8').write(lib_rust_meson_template.format(**kwargs))
+    def lib_kwargs(self) -> T.Dict[str, str]:
+        kwargs = super().lib_kwargs()
+        kwargs['crate_file'] = self.lowercase_token
+        return kwargs

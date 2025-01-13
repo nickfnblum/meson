@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2013-2021 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 from .base import ExternalDependency, DependencyException, DependencyTypeName
@@ -30,6 +20,7 @@ if T.TYPE_CHECKING:
     from ..cmake import CMakeTarget
     from ..environment import Environment
     from ..envconfig import MachineInfo
+    from ..interpreter.type_checking import PkgConfigDefineType
 
 class CMakeInfo(T.NamedTuple):
     module_paths: T.List[str]
@@ -80,7 +71,7 @@ class CMakeDependency(ExternalDependency):
 
     def __init__(self, name: str, environment: 'Environment', kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None, force_use_global_compilers: bool = False) -> None:
         # Gather a list of all languages to support
-        self.language_list = []  # type: T.List[str]
+        self.language_list: T.List[str] = []
         if language is None or force_use_global_compilers:
             compilers = None
             if kwargs.get('native', False):
@@ -103,10 +94,6 @@ class CMakeDependency(ExternalDependency):
         super().__init__(DependencyTypeName('cmake'), environment, kwargs, language=language)
         self.name = name
         self.is_libtool = False
-        # Store a copy of the CMake path on the object itself so it is
-        # stored in the pickled coredata and recovered.
-        self.cmakebin:  T.Optional[CMakeExecutor] = None
-        self.cmakeinfo: T.Optional[CMakeInfo] = None
 
         # Where all CMake "build dirs" are located
         self.cmake_root_dir = environment.scratch_dir
@@ -114,14 +101,12 @@ class CMakeDependency(ExternalDependency):
         # T.List of successfully found modules
         self.found_modules: T.List[str] = []
 
-        # Initialize with None before the first return to avoid
-        # AttributeError exceptions in derived classes
-        self.traceparser: T.Optional[CMakeTraceParser] = None
-
+        # Store a copy of the CMake path on the object itself so it is
+        # stored in the pickled coredata and recovered.
+        #
         # TODO further evaluate always using MachineChoice.BUILD
         self.cmakebin = CMakeExecutor(environment, CMakeDependency.class_cmake_version, self.for_machine, silent=self.silent)
         if not self.cmakebin.found():
-            self.cmakebin = None
             msg = f'CMake binary for machine {self.for_machine} not found. Giving up.'
             if self.required:
                 raise DependencyException(msg)
@@ -135,9 +120,10 @@ class CMakeDependency(ExternalDependency):
         cm_args = check_cmake_args(cm_args)
         if CMakeDependency.class_cmakeinfo[self.for_machine] is None:
             CMakeDependency.class_cmakeinfo[self.for_machine] = self._get_cmake_info(cm_args)
-        self.cmakeinfo = CMakeDependency.class_cmakeinfo[self.for_machine]
-        if self.cmakeinfo is None:
+        cmakeinfo = CMakeDependency.class_cmakeinfo[self.for_machine]
+        if cmakeinfo is None:
             raise self._gen_exception('Unable to obtain CMake system information')
+        self.cmakeinfo = cmakeinfo
 
         package_version = kwargs.get('cmake_package_version', '')
         if not isinstance(package_version, str):
@@ -225,7 +211,7 @@ class CMakeDependency(ExternalDependency):
         module_paths = [x for x in module_paths if os.path.isdir(x)]
         archs = temp_parser.get_cmake_var('MESON_ARCH_LIST')
 
-        common_paths = ['lib', 'lib32', 'lib64', 'libx32', 'share']
+        common_paths = ['lib', 'lib32', 'lib64', 'libx32', 'share', '']
         for i in archs:
             common_paths += [os.path.join('lib', i)]
 
@@ -312,7 +298,7 @@ class CMakeDependency(ExternalDependency):
                 return True
 
         # Check PATH
-        system_env = []  # type: T.List[str]
+        system_env: T.List[str] = []
         for i in os.environ.get('PATH', '').split(os.pathsep):
             if i.endswith('/bin') or i.endswith('\\bin'):
                 i = i[:-4]
@@ -388,6 +374,7 @@ class CMakeDependency(ExternalDependency):
             cmake_opts += ['-DARCHS={}'.format(';'.join(self.cmakeinfo.archs))]
             cmake_opts += [f'-DVERSION={package_version}']
             cmake_opts += ['-DCOMPS={}'.format(';'.join([x[0] for x in comp_mapped]))]
+            cmake_opts += ['-DSTATIC={}'.format('ON' if self.static else 'OFF')]
             cmake_opts += args
             cmake_opts += self.traceparser.trace_args()
             cmake_opts += toolchain.get_cmake_args()
@@ -489,7 +476,7 @@ class CMakeDependency(ExternalDependency):
             libs_raw = [x for x in self.traceparser.get_cmake_var('PACKAGE_LIBRARIES') if x]
 
             # CMake has a "fun" API, where certain keywords describing
-            # configurations can be in the *_LIBRARIES vraiables. See:
+            # configurations can be in the *_LIBRARIES variables. See:
             # - https://github.com/mesonbuild/meson/issues/9197
             # - https://gitlab.freedesktop.org/libnice/libnice/-/issues/140
             # - https://cmake.org/cmake/help/latest/command/target_link_libraries.html#overview  (the last point in the section)
@@ -505,7 +492,7 @@ class CMakeDependency(ExternalDependency):
                     libs += [i]
                 # According to the CMake docs, a keyword only works for the
                 # directly the following item and all items without a keyword
-                # are implizitly `general`
+                # are implicitly `general`
                 cfg_matches = True
 
             # Try to use old style variables if no module is specified
@@ -538,7 +525,7 @@ class CMakeDependency(ExternalDependency):
         for i, required in modules:
             if i not in self.traceparser.targets:
                 if not required:
-                    mlog.warning('CMake: T.Optional module', mlog.bold(self._original_module_name(i)), 'for', mlog.bold(name), 'was not found')
+                    mlog.warning('CMake: Optional module', mlog.bold(self._original_module_name(i)), 'for', mlog.bold(name), 'was not found')
                     continue
                 raise self._gen_exception('CMake: invalid module {} for {}.\n'
                                           'Try to explicitly specify one or more targets with the "modules" property.\n'
@@ -630,8 +617,8 @@ class CMakeDependency(ExternalDependency):
 
     def get_variable(self, *, cmake: T.Optional[str] = None, pkgconfig: T.Optional[str] = None,
                      configtool: T.Optional[str] = None, internal: T.Optional[str] = None,
-                     default_value: T.Optional[str] = None,
-                     pkgconfig_define: T.Optional[T.List[str]] = None) -> str:
+                     system: T.Optional[str] = None, default_value: T.Optional[str] = None,
+                     pkgconfig_define: PkgConfigDefineType = None) -> str:
         if cmake and self.traceparser is not None:
             try:
                 v = self.traceparser.vars[cmake]
@@ -651,3 +638,19 @@ class CMakeDependency(ExternalDependency):
         if default_value is not None:
             return default_value
         raise DependencyException(f'Could not get cmake variable and no default provided for {self!r}')
+
+
+class CMakeDependencyFactory:
+
+    def __init__(self, name: T.Optional[str] = None, modules: T.Optional[T.List[str]] = None):
+        self.name = name
+        self.modules = modules
+
+    def __call__(self, name: str, env: Environment, kwargs: T.Dict[str, T.Any], language: T.Optional[str] = None, force_use_global_compilers: bool = False) -> CMakeDependency:
+        if self.modules:
+            kwargs['modules'] = self.modules
+        return CMakeDependency(self.name or name, env, kwargs, language, force_use_global_compilers)
+
+    @staticmethod
+    def log_tried() -> str:
+        return CMakeDependency.log_tried()

@@ -7,7 +7,7 @@ short-description: Configuring a pre-generated build directory
 Often you want to change the settings of your build after it has been
 generated. For example you might want to change from a debug build
 into a release build, set custom compiler flags, change the build
-options provided in your `meson_options.txt` file and so on.
+options provided in your `meson.options` file and so on.
 
 The main tool for this is the `meson configure` command.
 
@@ -61,7 +61,7 @@ a sample output for a simple project.
       ------        ------------- ---------------                                                                                               -----------
       c_args        []                                                                                                                          Extra arguments passed to the C compiler
       c_link_args   []                                                                                                                          Extra arguments passed to the C linker
-      c_std         c99           [none, c89, c99, c11, c17, c18, c2x, gnu89, gnu99, gnu11, gnu17, gnu18, gnu2x]                                C language standard to use
+      c_std         c99           [none, c89, c99, c11, c17, c18, c2x, c23, gnu89, gnu99, gnu11, gnu17, gnu18, gnu2x, gnu23]                                C language standard to use
       cpp_args      []                                                                                                                          Extra arguments passed to the C++ compiler
       cpp_debugstl  false         [true, false]                                                                                                 STL debug mode
       cpp_link_args []                                                                                                                          Extra arguments passed to the C++ linker

@@ -1,21 +1,10 @@
 #!/usr/bin/env python3
-
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2017-2021 The Meson development team
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import subprocess
 import shutil, sys, os
+from glob import glob
 
 import xml.etree.ElementTree as ET
 
@@ -41,7 +30,10 @@ class PkgGenerator:
         if os.path.exists(self.pkg_dir):
             shutil.rmtree(self.pkg_dir)
         os.mkdir(self.pkg_dir)
-        pyinstaller_bin = '/Users/jpakkane/Library/Python/3.8/bin/pyinstaller'
+        pyinstaller_bin = glob('/Users/jpakkane/Library/Python/*/bin/pyinstaller')
+        if len(pyinstaller_bin) != 1:
+            sys.exit('Could not determine unique installer.')
+        pyinstaller_bin = pyinstaller_bin[0]
         pyinst_cmd = [pyinstaller_bin,
                       '--clean',
                       '--additional-hooks-dir=packaging',
@@ -85,7 +77,7 @@ class PkgGenerator:
         ET.SubElement(root, 'pkg-ref', {'id': self.identifier})
         ET.SubElement(root, 'options', {'customize': 'never',
                                         'require-scripts': 'false',
-                                        'hostArhcitectures': 'x86_64,arm64'})
+                                        'hostArchitectures': 'x86_64,arm64'})
         choices_outline = ET.SubElement(root, 'choices-outline')
         line = ET.SubElement(choices_outline, 'line', {'choice': 'default'})
         ET.SubElement(line, 'line', {'choice': self.identifier})
@@ -96,7 +88,7 @@ class PkgGenerator:
                                         'version': '0', # self.version,
                                         'onConclusion': 'none'}).text = self.pkgname
         ET.ElementTree(root).write(self.distribution_file, encoding='utf-8', xml_declaration=True)
-        # ElementTree can not do prettyprinting so do it manually
+        # ElementTree cannot do pretty-printing, so do it manually
         import xml.dom.minidom
         doc = xml.dom.minidom.parse(self.distribution_file)
         with open(self.distribution_file, 'w') as open_file:

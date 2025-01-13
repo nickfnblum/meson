@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2021-2024 The Meson Developers
+# Copyright © 2021-2024 Intel Corporation
+
 from __future__ import annotations
 
 from .interpreterobjects import extract_required_kwarg
@@ -5,7 +9,8 @@ from .. import mlog
 from .. import dependencies
 from .. import build
 from ..wrap import WrapMode
-from ..mesonlib import OptionKey, extract_as_list, stringlistify, version_compare_many, listify
+from ..mesonlib import extract_as_list, stringlistify, version_compare_many, listify
+from ..options import OptionKey
 from ..dependencies import Dependency, DependencyException, NotFoundDependency
 from ..interpreterbase import (MesonInterpreterObject, FeatureNew,
                                InterpreterException, InvalidArguments)
@@ -19,7 +24,7 @@ if T.TYPE_CHECKING:
 
 class DependencyFallbacksHolder(MesonInterpreterObject):
     def __init__(self, interpreter: 'Interpreter', names: T.List[str], allow_fallback: T.Optional[bool] = None,
-                 default_options: T.Optional[T.List[str]] = None) -> None:
+                 default_options: T.Optional[T.Dict[OptionKey, str]] = None) -> None:
         super().__init__(subproject=interpreter.subproject)
         self.interpreter = interpreter
         self.subproject = interpreter.subproject
@@ -30,7 +35,7 @@ class DependencyFallbacksHolder(MesonInterpreterObject):
         self.allow_fallback = allow_fallback
         self.subproject_name: T.Optional[str] = None
         self.subproject_varname: T.Optional[str] = None
-        self.subproject_kwargs = {'default_options': default_options or []}
+        self.subproject_kwargs = {'default_options': default_options or {}}
         self.names: T.List[str] = []
         self.forcefallback: bool = False
         self.nofallback: bool = False
@@ -114,12 +119,11 @@ class DependencyFallbacksHolder(MesonInterpreterObject):
         # dependency('foo', static: true) should implicitly add
         # default_options: ['default_library=static']
         static = kwargs.get('static')
-        default_options = stringlistify(func_kwargs.get('default_options', []))
-        if static is not None and not any('default_library' in i for i in default_options):
+        default_options = func_kwargs.get('default_options', {})
+        if static is not None and 'default_library' not in default_options:
             default_library = 'static' if static else 'shared'
-            opt = f'default_library={default_library}'
-            mlog.log(f'Building fallback subproject with {opt}')
-            default_options.append(opt)
+            mlog.log(f'Building fallback subproject with default_library={default_library}')
+            default_options[OptionKey('default_library')] = default_library
             func_kwargs['default_options'] = default_options
 
         # Configure the subproject
@@ -128,7 +132,7 @@ class DependencyFallbacksHolder(MesonInterpreterObject):
         func_kwargs.setdefault('version', [])
         if 'default_options' in kwargs and isinstance(kwargs['default_options'], str):
             func_kwargs['default_options'] = listify(kwargs['default_options'])
-        self.interpreter.do_subproject(subp_name, 'meson', func_kwargs)
+        self.interpreter.do_subproject(subp_name, func_kwargs)
         return self._get_subproject_dep(subp_name, varname, kwargs)
 
     def _get_subproject(self, subp_name: str) -> T.Optional[SubprojectHolder]:
@@ -220,6 +224,8 @@ class DependencyFallbacksHolder(MesonInterpreterObject):
                 mlog.log('Dependency', mlog.bold(self._display_name),
                          'found:', mlog.red('NO'), *info)
                 return cached_dep
+        elif self.forcefallback and self.subproject_name:
+            cached_dep = None
         else:
             info = [mlog.blue('(cached)')]
             cached_dep = self.coredata.deps[for_machine].get(identifier)
@@ -314,8 +320,7 @@ class DependencyFallbacksHolder(MesonInterpreterObject):
             return self._notfound_dependency()
 
         # Check if usage of the subproject fallback is forced
-        wrap_mode = self.coredata.get_option(OptionKey('wrap_mode'))
-        assert isinstance(wrap_mode, WrapMode), 'for mypy'
+        wrap_mode = WrapMode.from_string(self.coredata.get_option(OptionKey('wrap_mode')))
         force_fallback_for = self.coredata.get_option(OptionKey('force_fallback_for'))
         assert isinstance(force_fallback_for, list), 'for mypy'
         self.nofallback = wrap_mode == WrapMode.nofallback

@@ -1,18 +1,6 @@
 #!/usr/bin/env python3
-
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2018 The Meson development team
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import os
 import tempfile
@@ -84,7 +72,7 @@ class CommandTests(unittest.TestCase):
         os.chdir(str(self.orig_dir))
         super().tearDown()
 
-    def _run(self, command, workdir=None):
+    def _run(self, command, workdir=None, env=None):
         '''
         Run a command while printing the stdout, and also return a copy of it
         '''
@@ -92,7 +80,7 @@ class CommandTests(unittest.TestCase):
         # between CI issue and test bug in that case. Set timeout and fail loud
         # instead.
         p = subprocess.run(command, stdout=subprocess.PIPE,
-                           env=os.environ.copy(), text=True,
+                           env=env, text=True,
                            cwd=workdir, timeout=60 * 5)
         print(p.stdout)
         if p.returncode != 0:
@@ -135,8 +123,7 @@ class CommandTests(unittest.TestCase):
         (bindir / 'python3').symlink_to(python_command[0])
         os.environ['PATH'] = str(bindir) + os.pathsep + os.environ['PATH']
         # use our overridden PATH-compatible python
-        path_resolved_meson_command = resolved_meson_command.copy()
-        path_resolved_meson_command[0] = str(bindir / 'python3')
+        path_resolved_meson_command = [str(bindir / 'meson')]
         # See if it works!
         meson_py = 'meson'
         meson_setup = [meson_py, 'setup']
@@ -210,6 +197,21 @@ class CommandTests(unittest.TestCase):
         self._run([script.as_posix(), source, '--outfile', target, '--interpreter', python_command[0]])
         self._run([target.as_posix(), '--help'])
 
+    def test_meson_runpython(self):
+        meson_command = str(self.src_root / 'meson.py')
+        script_file = str(self.src_root / 'foo.py')
+        test_command = 'import sys; print(sys.argv[1])'
+        env = os.environ.copy()
+        del env['MESON_COMMAND_TESTS']
+        with open(script_file, 'w') as f:
+            f.write('#!/usr/bin/env python3\n\n')
+            f.write(f'{test_command}\n')
+        self.addCleanup(os.remove, script_file)
+
+        for cmd in [['-c', test_command, 'fake argument'], [script_file, 'fake argument']]:
+            pyout = self._run(python_command + cmd)
+            mesonout = self._run(python_command + [meson_command, 'runpython'] + cmd, env=env)
+            self.assertEqual(pyout, mesonout)
 
 if __name__ == '__main__':
     print('Meson build system', meson_version, 'Command Tests')

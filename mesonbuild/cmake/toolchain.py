@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2020 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 from pathlib import Path
@@ -144,7 +134,7 @@ class CMakeToolchain:
         return res
 
     def get_defaults(self) -> T.Dict[str, T.List[str]]:
-        defaults = {}  # type: T.Dict[str, T.List[str]]
+        defaults: T.Dict[str, T.List[str]] = {}
 
         # Do nothing if the user does not want automatic defaults
         if not self.properties.get_cmake_defaults():
@@ -153,13 +143,13 @@ class CMakeToolchain:
         # Best effort to map the meson system name to CMAKE_SYSTEM_NAME, which
         # is not trivial since CMake lacks a list of all supported
         # CMAKE_SYSTEM_NAME values.
-        SYSTEM_MAP = {
+        SYSTEM_MAP: T.Dict[str, str] = {
             'android': 'Android',
             'linux': 'Linux',
             'windows': 'Windows',
             'freebsd': 'FreeBSD',
             'darwin': 'Darwin',
-        }  # type: T.Dict[str, str]
+        }
 
         # Only set these in a cross build. Otherwise CMake will trip up in native
         # builds and thing they are cross (which causes TRY_RUN() to break)
@@ -198,6 +188,8 @@ class CMakeToolchain:
             defaults[prefix + 'COMPILER'] = exe_list
             if comp_obj.get_id() == 'clang-cl':
                 defaults['CMAKE_LINKER'] = comp_obj.get_linker_exelist()
+            if lang.startswith('objc') and comp_obj.get_id().startswith('clang'):
+                defaults[f'{prefix}FLAGS'] = ['-D__STDC__=1']
 
         return defaults
 
@@ -206,6 +198,8 @@ class CMakeToolchain:
         if compiler.get_argument_syntax() == 'msvc':
             return arg.startswith('/')
         else:
+            if compiler.exelist[0] == 'zig' and arg in {'ar', 'cc', 'c++', 'dlltool', 'lib', 'ranlib', 'objcopy', 'rc'}:
+                return True
             return arg.startswith('-')
 
     def update_cmake_compiler_state(self) -> None:
@@ -218,7 +212,7 @@ class CMakeToolchain:
         languages = list(self.compilers.keys())
         lang_ids = [language_map.get(x, x.upper()) for x in languages]
         cmake_content = dedent(f'''
-            cmake_minimum_required(VERSION 3.7)
+            cmake_minimum_required(VERSION 3.10)
             project(CompInfo {' '.join(lang_ids)})
         ''')
 
@@ -238,10 +232,15 @@ class CMakeToolchain:
         cmake_args += trace.trace_args()
         cmake_args += cmake_get_generator_args(self.env)
         cmake_args += [f'-DCMAKE_TOOLCHAIN_FILE={temp_toolchain_file.as_posix()}', '.']
-        rc, _, raw_trace = self.cmakebin.call(cmake_args, build_dir=build_dir, disable_cache=True)
+        rc, raw_stdout, raw_trace = self.cmakebin.call(cmake_args, build_dir=build_dir, disable_cache=True)
 
         if rc != 0:
             mlog.warning('CMake Toolchain: Failed to determine CMake compilers state')
+            mlog.debug(f' -- return code: {rc}')
+            for line in raw_stdout.split('\n'):
+                mlog.debug(f' -- stdout: {line.rstrip()}')
+            for line in raw_trace.split('\n'):
+                mlog.debug(f' -- stderr: {line.rstrip()}')
             return
 
         # Parse output
