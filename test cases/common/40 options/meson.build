@@ -1,4 +1,4 @@
-project('options', 'c')
+project('options', 'c', meson_version : '>= 1.0.0')
 
 if get_option('testoption') != 'optval'
   error('Incorrect value to test option')
@@ -18,7 +18,7 @@ if get_option('array_opt') != ['one', 'two']
 endif
 
 # If the default changes, update test cases/unit/13 reconfigure
-if get_option('b_lto') != false
+if get_option('b_pch') != true
   error('Incorrect value in base option.')
 endif
 
@@ -30,8 +30,10 @@ if get_option('integer_opt') != 3
   error('Incorrect value in integer option.')
 endif
 
-if get_option('neg_int_opt') != -3
-  error('Incorrect value in negative integer option.')
+negint = get_option('neg_int_opt')
+
+if negint != -3 and negint != -10
+  error('Incorrect value @0@ in negative integer option.'.format(negint))
 endif
 
 if get_option('CaseSenSiTivE') != 'Some CAPS'
@@ -43,3 +45,14 @@ if get_option('CASESENSITIVE') != 'ALL CAPS'
 endif
 
 assert(get_option('wrap_mode') == 'default', 'Wrap mode option is broken.')
+assert(get_option('boolean_string') == false)
+assert(get_option('boolean_string2') == true)
+assert(get_option('integer_string') == 42)
+
+testcase expect_error('Invalid option name \'..invalid\'')
+  get_option('..invalid')
+endtestcase
+
+testcase expect_error('Invalid option name \'this.is.also.invalid\'')
+  get_option('this.is.also.invalid')
+endtestcase

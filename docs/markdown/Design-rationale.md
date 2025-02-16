@@ -236,11 +236,11 @@ Above we mentioned precompiled headers as a feature not supported by
 other build systems. Here's how you would use them.
 
 ```meson
-project('pch demo', 'cxx')
+project('pch demo', 'cpp')
 executable('myapp', 'myapp.cpp', pch : 'pch/myapp.hh')
 ```
 
-The main reason other build systems can not provide pch support this
+The main reason other build systems cannot provide pch support this
 easily is because they don't enforce certain best practices. Due to
 the way include paths work, it is impossible to provide pch support
 that always works with both in-source and out-of-source

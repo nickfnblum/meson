@@ -1,18 +1,7 @@
 #!/usr/bin/env python3
-
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2012-2021 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 # Work around some pathlib bugs...
@@ -40,6 +29,7 @@ import time
 import typing as T
 import xml.etree.ElementTree as ET
 import collections
+import importlib.util
 
 from mesonbuild import build
 from mesonbuild import environment
@@ -47,23 +37,25 @@ from mesonbuild import compilers
 from mesonbuild import mesonlib
 from mesonbuild import mlog
 from mesonbuild import mtest
-from mesonbuild.compilers import compiler_from_language, detect_objc_compiler, detect_objcpp_compiler
+from mesonbuild.compilers import compiler_from_language
 from mesonbuild.build import ConfigurationData
 from mesonbuild.mesonlib import MachineChoice, Popen_safe, TemporaryDirectoryWinProof, setup_vsenv
 from mesonbuild.mlog import blue, bold, cyan, green, red, yellow, normal_green
-from mesonbuild.coredata import backendlist, version as meson_version
+from mesonbuild.coredata import version as meson_version
+from mesonbuild.options import backendlist
 from mesonbuild.modules.python import PythonExternalProgram
-from run_tests import get_fake_options, run_configure, get_meson_script
-from run_tests import get_backend_commands, get_backend_args_for_dir, Backend
-from run_tests import ensure_backend_detects_changes
-from run_tests import guess_backend
+from run_tests import (
+    get_fake_options, run_configure, get_meson_script, get_backend_commands,
+    get_backend_args_for_dir, Backend,
+    guess_backend, handle_meson_skip_test,
+)
+
 
 if T.TYPE_CHECKING:
     from types import FrameType
     from mesonbuild.environment import Environment
     from mesonbuild._typing import Protocol
     from concurrent.futures import Future
-    from mesonbuild.modules.python import PythonIntrospectionDict
 
     class CompilerArgumentType(Protocol):
         cross_file: str
@@ -81,11 +73,13 @@ if T.TYPE_CHECKING:
         failfast: bool
         no_unittests: bool
         only: T.List[str]
+        v: bool
 
 ALL_TESTS = ['cmake', 'common', 'native', 'warning-meson', 'failing-meson', 'failing-build', 'failing-test',
              'keyval', 'platform-osx', 'platform-windows', 'platform-linux',
              'java', 'C#', 'vala', 'cython', 'rust', 'd', 'objective c', 'objective c++',
-             'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm', 'wayland'
+             'fortran', 'swift', 'cuda', 'python3', 'python', 'fpga', 'frameworks', 'nasm', 'wasm', 'wayland',
+             'format',
              ]
 
 
@@ -97,6 +91,7 @@ class BuildStep(Enum):
     clean = 5
     validate = 6
 
+verbose_output = False
 
 class TestResult(BaseException):
     def __init__(self, cicmds: T.List[str]) -> None:
@@ -132,11 +127,11 @@ class InstalledFile:
         self.path = raw['file']
         self.typ = raw['type']
         self.platform = raw.get('platform', None)
-        self.language = raw.get('language', 'c')  # type: str
+        self.language = raw.get('language', 'c')
 
-        version = raw.get('version', '')  # type: str
+        version = raw.get('version', '')
         if version:
-            self.version = version.split('.')  # type: T.List[str]
+            self.version = version.split('.')
         else:
             # split on '' will return [''], we want an empty list though
             self.version = []
@@ -149,12 +144,12 @@ class InstalledFile:
             canonical_compiler = 'msvc'
 
         python_suffix = python.info['suffix']
-
+        python_limited_suffix = python.info['limited_api_suffix']
         has_pdb = False
         if self.language in {'c', 'cpp'}:
             has_pdb = canonical_compiler == 'msvc'
         elif self.language == 'd':
-            # dmd's optlink does not genearte pdb iles
+            # dmd's optlink does not generate pdb files
             has_pdb = env.coredata.compilers.host['d'].linker.id in {'link', 'lld-link'}
 
         # Abort if the platform does not match
@@ -168,7 +163,7 @@ class InstalledFile:
             return None
 
         # Handle the different types
-        if self.typ in {'py_implib', 'python_lib', 'python_file'}:
+        if self.typ in {'py_implib', 'py_limited_implib', 'python_lib', 'python_limited_lib', 'python_file', 'python_bytecode'}:
             val = p.as_posix()
             val = val.replace('@PYTHON_PLATLIB@', python.platlib)
             val = val.replace('@PYTHON_PURELIB@', python.purelib)
@@ -177,6 +172,8 @@ class InstalledFile:
                 return p
             if self.typ == 'python_lib':
                 return p.with_suffix(python_suffix)
+            if self.typ == 'python_limited_lib':
+                return p.with_suffix(python_limited_suffix)
             if self.typ == 'py_implib':
                 p = p.with_suffix(python_suffix)
                 if env.machines.host.is_windows() and canonical_compiler == 'msvc':
@@ -185,7 +182,17 @@ class InstalledFile:
                     return p.with_suffix('.dll.a')
                 else:
                     return None
-        elif self.typ in {'file', 'dir'}:
+            if self.typ == 'py_limited_implib':
+                p = p.with_suffix(python_limited_suffix)
+                if env.machines.host.is_windows() and canonical_compiler == 'msvc':
+                    return p.with_suffix('.lib')
+                elif env.machines.host.is_windows() or env.machines.host.is_cygwin():
+                    return p.with_suffix('.dll.a')
+                else:
+                    return None
+            if self.typ == 'python_bytecode':
+                return p.parent / importlib.util.cache_from_source(p.name)
+        elif self.typ in {'file', 'dir', 'link'}:
             return p
         elif self.typ == 'shared_lib':
             if env.machines.host.is_windows() or env.machines.host.is_cygwin():
@@ -213,7 +220,9 @@ class InstalledFile:
                     suffix = '{}.{}'.format(suffix, '.'.join(self.version))
             return p.with_suffix(suffix)
         elif self.typ == 'exe':
-            if env.machines.host.is_windows() or env.machines.host.is_cygwin():
+            if 'mwcc' in canonical_compiler:
+                return p.with_suffix('.nef')
+            elif env.machines.host.is_windows() or env.machines.host.is_cygwin():
                 return p.with_suffix('.exe')
         elif self.typ == 'pdb':
             if self.version:
@@ -247,22 +256,29 @@ class InstalledFile:
             if not abs_p.is_dir():
                 raise RuntimeError(f'{p} is not a directory')
             return [x.relative_to(installdir) for x in abs_p.rglob('*') if x.is_file() or x.is_symlink()]
+        elif self.typ == 'link':
+            abs_p = installdir / p
+            if not abs_p.is_symlink():
+                raise RuntimeError(f'{p} is not a symlink')
+            return [p]
         else:
             return [p]
 
 @functools.total_ordering
 class TestDef:
-    def __init__(self, path: Path, name: T.Optional[str], args: T.List[str], skip: bool = False):
+    def __init__(self, path: Path, name: T.Optional[str], args: T.List[str], skip: bool = False, skip_category: bool = False):
         self.category = path.parts[1]
         self.path = path
         self.name = name
         self.args = args
         self.skip = skip
         self.env = os.environ.copy()
-        self.installed_files = []  # type: T.List[InstalledFile]
-        self.do_not_set_opts = []  # type: T.List[str]
-        self.stdout = [] # type: T.List[T.Dict[str, str]]
+        self.installed_files: T.List[InstalledFile] = []
+        self.do_not_set_opts: T.List[str] = []
+        self.stdout: T.List[T.Dict[str, str]] = []
+        self.skip_category = skip_category
         self.skip_expected = False
+        self.cleanup: T.List[str] = []
 
         # Always print a stack trace for Meson exceptions
         self.env['MESON_FORCE_BACKTRACE'] = '1'
@@ -286,6 +302,7 @@ class TestDef:
             return (s_id, self.path, self.name or '') < (o_id, other.path, other.name or '')
         return NotImplemented
 
+failing_testcases: T.List[str] = []
 failing_logs: T.List[str] = []
 print_debug = 'MESON_PRINT_TEST_OUTPUT' in os.environ
 under_ci = 'CI' in os.environ
@@ -375,7 +392,7 @@ def platform_fix_name(fname: str, canonical_compiler: str, env: environment.Envi
 
 def validate_install(test: TestDef, installdir: Path, env: environment.Environment) -> str:
     ret_msg = ''
-    expected_raw = []  # type: T.List[Path]
+    expected_raw: T.List[Path] = []
     for i in test.installed_files:
         try:
             expected_raw += i.get_paths(host_c_compiler, env, installdir)
@@ -422,11 +439,12 @@ def log_text_file(logfile: T.TextIO, testdir: Path, result: TestResult) -> None:
 def _run_ci_include(args: T.List[str]) -> str:
     if not args:
         return 'At least one parameter required'
+
+    header = f'Included file {args[0]}:'
     try:
-        data = Path(args[0]).read_text(errors='ignore', encoding='utf-8')
-        return 'Included file {}:\n{}\n'.format(args[0], data)
+        return mlog.ci_fold_file(args[0], header, force=True)
     except Exception:
-        return 'Failed to open {}'.format(args[0])
+        return 'Failed to open {}\n'.format(args[0])
 
 ci_commands = {
     'ci_include': _run_ci_include
@@ -440,7 +458,7 @@ def run_ci_commands(raw_log: str) -> T.List[str]:
         cmd = shlex.split(l[11:])
         if not cmd or cmd[0] not in ci_commands:
             continue
-        res += ['CI COMMAND {}:\n{}\n'.format(cmd[0], ci_commands[cmd[0]](cmd[1:]))]
+        res += ['CI COMMAND {}:\n{}'.format(cmd[0], ci_commands[cmd[0]](cmd[1:]))]
     return res
 
 class OutputMatch:
@@ -532,10 +550,15 @@ def validate_output(test: TestDef, stdo: str, stde: str) -> str:
 # coded to run as a batch process.
 def clear_internal_caches() -> None:
     import mesonbuild.interpreterbase
-    from mesonbuild.dependencies import CMakeDependency
+    from mesonbuild.dependencies.cmake import CMakeDependency
+    from mesonbuild.dependencies.pkgconfig import PkgConfigInterface
     from mesonbuild.mesonlib import PerMachine
     mesonbuild.interpreterbase.FeatureNew.feature_registry = {}
     CMakeDependency.class_cmakeinfo = PerMachine(None, None)
+    PkgConfigInterface.class_impl = PerMachine(False, False)
+    PkgConfigInterface.class_cli_impl = PerMachine(False, False)
+    PkgConfigInterface.pkg_bin_per_machine = PerMachine(None, None)
+
 
 def run_test_inprocess(testdir: str) -> T.Tuple[int, str, str, str]:
     old_stdout = sys.stdout
@@ -544,11 +567,11 @@ def run_test_inprocess(testdir: str) -> T.Tuple[int, str, str, str]:
     sys.stderr = mystderr = StringIO()
     old_cwd = os.getcwd()
     os.chdir(testdir)
-    test_log_fname = Path('meson-logs', 'testlog.txt')
+    test_log_fname = os.path.join('meson-logs', 'testlog.txt')
     try:
         returncode_test = mtest.run_with_args(['--no-rebuild'])
-        if test_log_fname.exists():
-            test_log = test_log_fname.open(encoding='utf-8', errors='ignore').read()
+        if os.path.exists(test_log_fname):
+            test_log = _run_ci_include([test_log_fname])
         else:
             test_log = ''
         returncode_benchmark = mtest.run_with_args(['--no-rebuild', '--benchmark', '--logbase', 'benchmarklog'])
@@ -654,16 +677,18 @@ def _run_test(test: TestDef,
         gen_args.extend(['--native-file', nativefile.as_posix()])
     if crossfile.exists():
         gen_args.extend(['--cross-file', crossfile.as_posix()])
-    (returncode, stdo, stde) = run_configure(gen_args, env=test.env, catch_exception=True)
-    try:
-        logfile = Path(test_build_dir, 'meson-logs', 'meson-log.txt')
-        with logfile.open(errors='ignore', encoding='utf-8') as fid:
-            mesonlog = fid.read()
-    except Exception:
+    inprocess, res = run_configure(gen_args, env=test.env, catch_exception=True)
+    returncode, stdo, stde = res
+    cmd = '(inprocess) $ ' if inprocess else '$ '
+    cmd += mesonlib.join_args(gen_args)
+    logfile = os.path.join(test_build_dir, 'meson-logs', 'meson-log.txt')
+    if os.path.exists(logfile):
+        mesonlog = '\n'.join((cmd, _run_ci_include([logfile])))
+    else:
         mesonlog = no_meson_log_msg
     cicmds = run_ci_commands(mesonlog)
     testresult = TestResult(cicmds)
-    testresult.add_step(BuildStep.configure, stdo, stde, mesonlog, time.time() - gen_start)
+    testresult.add_step(BuildStep.configure, '\n'.join((cmd, stdo)), stde, mesonlog, time.time() - gen_start)
     output_msg = validate_output(test, stdo, stde)
     testresult.mlog += output_msg
     if output_msg:
@@ -687,8 +712,15 @@ def _run_test(test: TestDef,
     # Build with subprocess
     def build_step() -> None:
         build_start = time.time()
-        pc, o, e = Popen_safe(compile_commands + dir_args, cwd=test_build_dir)
-        testresult.add_step(BuildStep.build, o, e, '', time.time() - build_start)
+
+        if backend is Backend.ninja:
+            # FIXME: meson test inprocess does not handle running ninja via StringIO
+            targets = ['all', 'meson-test-prereq', 'meson-benchmark-prereq']
+        else:
+            targets = []
+
+        pc, o, _ = Popen_safe(compile_commands + dir_args + targets, cwd=test_build_dir, stderr=subprocess.STDOUT)
+        testresult.add_step(BuildStep.build, o, '', '', time.time() - build_start)
         if should_fail == 'build':
             if pc.returncode != 0:
                 raise testresult
@@ -700,7 +732,6 @@ def _run_test(test: TestDef,
 
     # Touch the meson.build file to force a regenerate
     def force_regenerate() -> None:
-        ensure_backend_detects_changes(backend)
         os.utime(str(test.path / 'meson.build'))
 
     # just test building
@@ -765,13 +796,13 @@ def _skip_keys(test_def: T.Dict) -> T.Tuple[bool, bool]:
 
     # Test is expected to skip if MESON_CI_JOBNAME contains any of the list of
     # substrings
-    if ('skip_on_jobname' in test_def) and (ci_jobname is not None):
-        skip_expected = any(s in ci_jobname for s in test_def['skip_on_jobname'])
+    if ('expect_skip_on_jobname' in test_def) and (ci_jobname is not None):
+        skip_expected = any(s in ci_jobname for s in test_def['expect_skip_on_jobname'])
 
     # Test is expected to skip if os matches
-    if 'skip_on_os' in test_def:
-        mesonenv = environment.Environment(None, None, get_fake_options('/'))
-        for skip_os in test_def['skip_on_os']:
+    if 'expect_skip_on_os' in test_def:
+        mesonenv = environment.Environment('', '', get_fake_options('/'))
+        for skip_os in test_def['expect_skip_on_os']:
             if skip_os.startswith('!'):
                 if mesonenv.machines.host.system != skip_os[1:]:
                     skip_expected = True
@@ -789,7 +820,7 @@ def _skip_keys(test_def: T.Dict) -> T.Tuple[bool, bool]:
     return (skip, skip_expected)
 
 
-def load_test_json(t: TestDef, stdout_mandatory: bool) -> T.List[TestDef]:
+def load_test_json(t: TestDef, stdout_mandatory: bool, skip_category: bool = False) -> T.List[TestDef]:
     all_tests: T.List[TestDef] = []
     test_def = {}
     test_def_file = t.path / 'test.json'
@@ -797,7 +828,7 @@ def load_test_json(t: TestDef, stdout_mandatory: bool) -> T.List[TestDef]:
         test_def = json.loads(test_def_file.read_text(encoding='utf-8'))
 
     # Handle additional environment variables
-    env = {}  # type: T.Dict[str, str]
+    env: T.Dict[str, str] = {}
     if 'env' in test_def:
         assert isinstance(test_def['env'], dict)
         env = test_def['env']
@@ -807,7 +838,7 @@ def load_test_json(t: TestDef, stdout_mandatory: bool) -> T.List[TestDef]:
             env[key] = val
 
     # Handle installed files
-    installed = []  # type: T.List[InstalledFile]
+    installed: T.List[InstalledFile] = []
     if 'installed' in test_def:
         installed = [InstalledFile(x) for x in test_def['installed']]
 
@@ -817,9 +848,11 @@ def load_test_json(t: TestDef, stdout_mandatory: bool) -> T.List[TestDef]:
         raise RuntimeError(f"{test_def_file} must contain a non-empty stdout key")
 
     # Handle the do_not_set_opts list
-    do_not_set_opts = test_def.get('do_not_set_opts', [])  # type: T.List[str]
+    do_not_set_opts: T.List[str] = test_def.get('do_not_set_opts', [])
 
     (t.skip, t.skip_expected) = _skip_keys(test_def)
+
+    cleanup = test_def.get('cleanup', [])
 
     # Skip tests if the tool requirements are not met
     if 'tools' in test_def:
@@ -836,17 +869,18 @@ def load_test_json(t: TestDef, stdout_mandatory: bool) -> T.List[TestDef]:
         t.installed_files = installed
         t.do_not_set_opts = do_not_set_opts
         t.stdout = stdout
+        t.cleanup = cleanup
         return [t]
 
     new_opt_list: T.List[T.List[T.Tuple[str, str, bool, bool]]]
 
     # 'matrix; entry is present, so build multiple tests from matrix definition
-    opt_list = []  # type: T.List[T.List[T.Tuple[str, str, bool, bool]]]
+    opt_list: T.List[T.List[T.Tuple[str, str, bool, bool]]] = []
     matrix = test_def['matrix']
     assert "options" in matrix
     for key, val in matrix["options"].items():
         assert isinstance(val, list)
-        tmp_opts = []  # type: T.List[T.Tuple[str, str, bool, bool]]
+        tmp_opts: T.List[T.Tuple[str, str, bool, bool]] = []
         for i in val:
             assert isinstance(i, dict)
             assert "val" in i
@@ -899,27 +933,31 @@ def load_test_json(t: TestDef, stdout_mandatory: bool) -> T.List[TestDef]:
         opts = [f'-D{x[0]}={x[1]}' for x in i if x[1] is not None]
         skip = any([x[2] for x in i])
         skip_expected = any([x[3] for x in i])
-        test = TestDef(t.path, name, opts, skip or t.skip)
+        test = TestDef(t.path, name, opts, skip or t.skip, skip_category)
         test.env.update(env)
         test.installed_files = installed
         test.do_not_set_opts = do_not_set_opts
         test.stdout = stdout
         test.skip_expected = skip_expected or t.skip_expected
+        test.cleanup = cleanup
+
         all_tests.append(test)
 
     return all_tests
 
 
-def gather_tests(testdir: Path, stdout_mandatory: bool, only: T.List[str]) -> T.List[TestDef]:
+def gather_tests(testdir: Path, stdout_mandatory: bool, only: T.List[str], skip_category: bool) -> T.List[TestDef]:
     all_tests: T.List[TestDef] = []
     for t in testdir.iterdir():
         # Filter non-tests files (dot files, etc)
         if not t.is_dir() or t.name.startswith('.'):
             continue
+        if t.name in {'18 includedirxyz'}:
+            continue
         if only and not any(t.name.startswith(prefix) for prefix in only):
             continue
-        test_def = TestDef(t, None, [])
-        all_tests.extend(load_test_json(test_def, stdout_mandatory))
+        test_def = TestDef(t, None, [], skip_category=skip_category)
+        all_tests.extend(load_test_json(test_def, stdout_mandatory, skip_category))
     return sorted(all_tests)
 
 
@@ -942,33 +980,26 @@ def have_d_compiler() -> bool:
     return False
 
 def have_objc_compiler(use_tmp: bool) -> bool:
-    with TemporaryDirectoryWinProof(prefix='b ', dir=None if use_tmp else '.') as build_dir:
-        env = environment.Environment(None, build_dir, get_fake_options('/'))
-        try:
-            objc_comp = detect_objc_compiler(env, MachineChoice.HOST)
-        except mesonlib.MesonException:
-            return False
-        if not objc_comp:
-            return False
-        env.coredata.process_new_compiler('objc', objc_comp, env)
-        try:
-            objc_comp.sanity_check(env.get_scratch_dir(), env)
-        except mesonlib.MesonException:
-            return False
-    return True
+    return have_working_compiler('objc', use_tmp)
 
 def have_objcpp_compiler(use_tmp: bool) -> bool:
+    return have_working_compiler('objcpp', use_tmp)
+
+def have_cython_compiler(use_tmp: bool) -> bool:
+    return have_working_compiler('cython', use_tmp)
+
+def have_working_compiler(lang: str, use_tmp: bool) -> bool:
     with TemporaryDirectoryWinProof(prefix='b ', dir=None if use_tmp else '.') as build_dir:
-        env = environment.Environment(None, build_dir, get_fake_options('/'))
+        env = environment.Environment('', build_dir, get_fake_options('/'))
         try:
-            objcpp_comp = detect_objcpp_compiler(env, MachineChoice.HOST)
+            compiler = compiler_from_language(env, lang, MachineChoice.HOST)
         except mesonlib.MesonException:
             return False
-        if not objcpp_comp:
+        if not compiler:
             return False
-        env.coredata.process_new_compiler('objcpp', objcpp_comp, env)
+        env.coredata.process_compiler_options(lang, compiler, env, '')
         try:
-            objcpp_comp.sanity_check(env.get_scratch_dir(), env)
+            compiler.sanity_check(env.get_scratch_dir(), env)
         except mesonlib.MesonException:
             return False
     return True
@@ -1062,6 +1093,7 @@ def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List
     """
 
     skip_fortran = not(shutil.which('gfortran') or
+                       shutil.which('flang-new') or
                        shutil.which('flang') or
                        shutil.which('pgfortran') or
                        shutil.which('nagfor') or
@@ -1091,10 +1123,10 @@ def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List
         TestCategory('platform-osx', 'osx', not mesonlib.is_osx()),
         TestCategory('platform-windows', 'windows', not mesonlib.is_windows() and not mesonlib.is_cygwin()),
         TestCategory('platform-linux', 'linuxlike', mesonlib.is_osx() or mesonlib.is_windows()),
-        TestCategory('java', 'java', backend is not Backend.ninja or mesonlib.is_osx() or not have_java()),
+        TestCategory('java', 'java', backend is not Backend.ninja or not have_java()),
         TestCategory('C#', 'csharp', skip_csharp(backend)),
         TestCategory('vala', 'vala', backend is not Backend.ninja or not shutil.which(os.environ.get('VALAC', 'valac'))),
-        TestCategory('cython', 'cython', backend is not Backend.ninja or not shutil.which(os.environ.get('CYTHON', 'cython'))),
+        TestCategory('cython', 'cython', backend is not Backend.ninja or not have_cython_compiler(options.use_tmpdir)),
         TestCategory('rust', 'rust', should_skip_rust(backend)),
         TestCategory('d', 'd', backend is not Backend.ninja or not have_d_compiler()),
         TestCategory('objective c', 'objc', backend not in (Backend.ninja, Backend.xcode) or not have_objc_compiler(options.use_tmpdir)),
@@ -1103,13 +1135,14 @@ def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List
         TestCategory('swift', 'swift', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('swiftc')),
         # CUDA tests on Windows: use Ninja backend:  python run_project_tests.py --only cuda --backend ninja
         TestCategory('cuda', 'cuda', backend not in (Backend.ninja, Backend.xcode) or not shutil.which('nvcc')),
-        TestCategory('python3', 'python3', backend is not Backend.ninja),
+        TestCategory('python3', 'python3', backend is not Backend.ninja or 'python3' not in sys.executable),
         TestCategory('python', 'python'),
         TestCategory('fpga', 'fpga', shutil.which('yosys') is None),
         TestCategory('frameworks', 'frameworks'),
         TestCategory('nasm', 'nasm'),
         TestCategory('wasm', 'wasm', shutil.which('emcc') is None or backend is not Backend.ninja),
         TestCategory('wayland', 'wayland', should_skip_wayland()),
+        TestCategory('format', 'format'),
     ]
 
     categories = [t.category for t in all_tests]
@@ -1120,7 +1153,7 @@ def detect_tests_to_run(only: T.Dict[str, T.List[str]], use_tmp: bool) -> T.List
             assert key in categories, f'key `{key}` is not a recognized category'
         all_tests = [t for t in all_tests if t.category in only.keys()]
 
-    gathered_tests = [(t.category, gather_tests(Path('test cases', t.subdir), t.stdout_mandatory, only[t.category]), t.skip) for t in all_tests]
+    gathered_tests = [(t.category, gather_tests(Path('test cases', t.subdir), t.stdout_mandatory, only[t.category], t.skip), t.skip) for t in all_tests]
     return gathered_tests
 
 def run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
@@ -1161,8 +1194,9 @@ class TestRunFuture:
         return self.future.result() if self.future else None
 
     def log(self) -> None:
-        without_install = '' if install_commands else '(without install)'
-        safe_print(self.status.value, without_install, *self.testdef.display_name())
+        if verbose_output or self.status.value != TestStatus.OK.value:
+            without_install = '' if install_commands else '(without install)'
+            safe_print(self.status.value, without_install, *self.testdef.display_name())
 
     def update_log(self, new_status: TestStatus) -> None:
         self.status = new_status
@@ -1184,12 +1218,6 @@ class LogRunFuture:
         pass
 
 RunFutureUnion = T.Union[TestRunFuture, LogRunFuture]
-
-def test_emits_skip_msg(line: str) -> bool:
-    for prefix in {'Problem encountered', 'Assert failed', 'Failed to configure the CMake subproject'}:
-        if f'{prefix}: MESON_SKIP_TEST' in line:
-            return True
-    return False
 
 def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
                log_name_base: str,
@@ -1221,6 +1249,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
         current_suite = ET.SubElement(junit_root, 'testsuite', {'name': name, 'tests': str(len(test_cases))})
         if skipped:
             futures += [LogRunFuture(['\n', bold(f'Not running {name} tests.'), '\n'])]
+            continue
         else:
             futures += [LogRunFuture(['\n', bold(f'Running {name} tests.'), '\n'])]
 
@@ -1303,15 +1332,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             skip_as_expected = True
         else:
             # skipped due to test outputting 'MESON_SKIP_TEST'
-            for l in result.stdo.splitlines():
-                if test_emits_skip_msg(l):
-                    is_skipped = True
-                    offset = l.index('MESON_SKIP_TEST') + 16
-                    skip_reason = l[offset:].strip()
-                    break
-            else:
-                is_skipped = False
-                skip_reason = ''
+            is_skipped, skip_reason = handle_meson_skip_test(result.stdo)
             if not skip_dont_care(t):
                 skip_as_expected = (is_skipped == t.skip_expected)
             else:
@@ -1322,7 +1343,8 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
 
         if is_skipped and skip_as_expected:
             f.update_log(TestStatus.SKIP)
-            safe_print(bold('Reason:'), skip_reason)
+            if not t.skip_category:
+                safe_print(bold('Reason:'), skip_reason)
             current_test = ET.SubElement(current_suite, 'testcase', {'name': testname, 'classname': t.category})
             ET.SubElement(current_test, 'skipped', {})
             continue
@@ -1330,7 +1352,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
         if not skip_as_expected:
             failing_tests += 1
             if is_skipped:
-                skip_msg = 'Test asked to be skipped, but was not expected to'
+                skip_msg = f'Test asked to be skipped ({skip_reason}), but was not expected to'
                 status = TestStatus.UNEXSKIP
             else:
                 skip_msg = 'Test ran, but was expected to be skipped'
@@ -1338,6 +1360,7 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             result.msg = f"{skip_msg} for MESON_CI_JOBNAME '{ci_jobname}'"
 
             f.update_log(status)
+            safe_print(bold('Reason:'), result.msg)
             current_test = ET.SubElement(current_suite, 'testcase', {'name': testname, 'classname': t.category})
             ET.SubElement(current_test, 'failure', {'message': result.msg})
             continue
@@ -1356,7 +1379,11 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
             left_w = max(3, left_w)
             right_w = cols - left_w - name_len - 2
             right_w = max(3, right_w)
+            failing_testcases.append(name_str)
             failing_logs.append(f'\n\x1b[31m{"="*left_w}\x1b[0m {name_str} \x1b[31m{"="*right_w}\x1b[0m\n')
+            _during = bold('Failed during:')
+            _reason = bold('Reason:')
+            failing_logs.append(f'{_during} {result.step.name}\n{_reason} {result.msg}\n')
             if result.step == BuildStep.configure and result.mlog != no_meson_log_msg:
                 # For configure failures, instead of printing stdout,
                 # print the meson log if available since it's a superset
@@ -1380,6 +1407,13 @@ def _run_tests(all_tests: T.List[T.Tuple[str, T.List[TestDef], bool]],
         else:
             f.update_log(TestStatus.OK)
             passing_tests += 1
+            for cleanup_path in t.cleanup:
+                assert not os.path.isabs(cleanup_path)
+                abspath = t.path / cleanup_path
+                if abspath.is_file():
+                    mesonlib.windows_proof_rm(abspath)
+                else:
+                    mesonlib.windows_proof_rmtree(abspath)
         conf_time += result.conftime
         build_time += result.buildtime
         test_time += result.testtime
@@ -1447,7 +1481,7 @@ def detect_system_compiler(options: 'CompilerArgumentType') -> None:
     if options.native_file:
         fake_opts.native_file = [options.native_file]
 
-    env = environment.Environment(None, None, fake_opts)
+    env = environment.Environment('', '', fake_opts)
 
     print_compilers(env, MachineChoice.HOST)
     if options.cross_file:
@@ -1487,7 +1521,7 @@ class ToolInfo(T.NamedTuple):
     regex: T.Pattern
     match_group: int
 
-def print_tool_versions() -> None:
+def detect_tools(report: bool = True) -> None:
     tools: T.List[ToolInfo] = [
         ToolInfo(
             'ninja',
@@ -1527,6 +1561,11 @@ def print_tool_versions() -> None:
 
         return f'{exe} (unknown)'
 
+    if not report:
+        for tool in tools:
+            get_version(tool)
+        return
+
     print()
     print('tools')
     print()
@@ -1536,6 +1575,24 @@ def print_tool_versions() -> None:
         print('{0:<{2}}: {1}'.format(tool.tool, get_version(tool), max_width))
     print()
 
+symlink_test_dir1 = None
+symlink_test_dir2 = None
+symlink_file1 = None
+symlink_file2 = None
+symlink_file3 = None
+
+def scan_test_data_symlinks() -> None:
+    global symlink_test_dir1, symlink_test_dir2, symlink_file1, symlink_file2, symlink_file3
+    tmpdir1 = list(Path('.').glob('test cases/**/*install functions and follow symlinks'))
+    tmpdir2 = list(Path('.').glob('test cases/frameworks/*boost symlinks'))
+    assert len(tmpdir1) == 1
+    assert len(tmpdir2) == 1
+    symlink_test_dir1 = tmpdir1[0]
+    symlink_test_dir2 = tmpdir2[0] / 'boost/include'
+    symlink_file1 = symlink_test_dir1 / 'foo/link1'
+    symlink_file2 = symlink_test_dir1 / 'foo/link2.h'
+    symlink_file3 = symlink_test_dir2 / 'boost'
+
 def clear_transitive_files() -> None:
     a = Path('test cases/common')
     for d in a.glob('*subproject subdir/subprojects/subsubsub*'):
@@ -1543,13 +1600,37 @@ def clear_transitive_files() -> None:
             mesonlib.windows_proof_rmtree(str(d))
         else:
             mesonlib.windows_proof_rm(str(d))
+    try:
+        if symlink_file1 is not None:
+            symlink_file1.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        if symlink_file2 is not None:
+            symlink_file2.unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        if symlink_file3 is not None:
+            symlink_file3.unlink()
+            symlink_test_dir2.rmdir()
+    except FileNotFoundError:
+        pass
+
+def setup_symlinks() -> None:
+    try:
+        symlink_file1.symlink_to('file1')
+        symlink_file2.symlink_to('file1')
+        symlink_test_dir2.mkdir(parents=True, exist_ok=True)
+        symlink_file3.symlink_to('../Cellar/boost/0.3.0/include/boost')
+    except OSError:
+        print('symlinks are not supported on this system')
 
 if __name__ == '__main__':
     if under_ci and not raw_ci_jobname:
         raise SystemExit('Running under CI but $MESON_CI_JOBNAME is not set (set to "thirdparty" if you are running outside of the github org)')
 
     setup_vsenv()
-
     try:
         # This fails in some CI environments for unknown reasons.
         num_workers = multiprocessing.cpu_count()
@@ -1575,25 +1656,33 @@ if __name__ == '__main__':
                         help='Not used, only here to simplify run_tests.py')
     parser.add_argument('--only', default=[],
                         help='name of test(s) to run, in format "category[/name]" where category is one of: ' + ', '.join(ALL_TESTS), nargs='+')
+    parser.add_argument('-v', default=False, action='store_true',
+                        help='Verbose mode')
     parser.add_argument('--cross-file', action='store', help='File describing cross compilation environment.')
     parser.add_argument('--native-file', action='store', help='File describing native compilation environment.')
     parser.add_argument('--use-tmpdir', action='store_true', help='Use tmp directory for temporary files.')
     options = T.cast('ArgumentType', parser.parse_args())
+    verbose_output = options.v
 
     if options.cross_file:
         options.extra_args += ['--cross-file', options.cross_file]
     if options.native_file:
         options.extra_args += ['--native-file', options.native_file]
 
+    if not mesonlib.is_windows():
+        scan_test_data_symlinks()
     clear_transitive_files()
+    if not mesonlib.is_windows():
+        setup_symlinks()
+    mesonlib.set_meson_command(get_meson_script())
 
     print('Meson build system', meson_version, 'Project Tests')
-    print('Using python', sys.version.split('\n')[0])
+    print('Using python', sys.version.split('\n')[0], f'({sys.executable!r})')
     if 'VSCMD_VER' in os.environ:
         print('VSCMD version', os.environ['VSCMD_VER'])
     setup_commands(options.backend)
     detect_system_compiler(options)
-    print_tool_versions()
+    detect_tools()
     script_dir = os.path.split(__file__)[0]
     if script_dir != '':
         os.chdir(script_dir)
@@ -1611,10 +1700,6 @@ if __name__ == '__main__':
         (passing_tests, failing_tests, skipped_tests) = res
     except StopException:
         pass
-    print()
-    print('Total passed tests: ', green(str(passing_tests)))
-    print('Total failed tests: ', red(str(failing_tests)))
-    print('Total skipped tests:', yellow(str(skipped_tests)))
     if failing_tests > 0:
         print('\nMesonlogs of failing tests\n')
         for l in failing_logs:
@@ -1622,6 +1707,14 @@ if __name__ == '__main__':
                 print(l, '\n')
             except UnicodeError:
                 print(l.encode('ascii', errors='replace').decode(), '\n')
+    print()
+    print('Total passed tests: ', green(str(passing_tests)))
+    print('Total failed tests: ', red(str(failing_tests)))
+    print('Total skipped tests:', yellow(str(skipped_tests)))
+    if failing_tests > 0:
+        print('\nAll failures:')
+        for c in failing_testcases:
+            print(f'  -> {c}')
     for name, dirs, _ in all_tests:
         dir_names = list({x.path.name for x in dirs})
         for k, g in itertools.groupby(dir_names, key=lambda x: x.split()[0]):

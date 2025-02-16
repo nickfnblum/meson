@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2021 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from .generatorbase import GeneratorBase
 import re
@@ -105,7 +94,7 @@ class GeneratorMD(GeneratorBase):
 
     def _link_to_object(self, obj: T.Union[Function, Object], in_code_block: bool = False) -> str:
         '''
-            Generate a palaceholder tag for the the function/method/object documentation.
+            Generate a placeholder tag for the function/method/object documentation.
             This tag is then replaced in the custom hotdoc plugin.
         '''
         prefix = '#' if in_code_block else ''
@@ -161,6 +150,9 @@ class GeneratorMD(GeneratorBase):
             # I know, this regex is ugly but it works.
             return len(re.sub(r'\[\[(#|@)*([^\[])', r'\2', s))
 
+        def arg_anchor(arg: ArgBase) -> str:
+            return f'{func.name}_{arg.name.replace("<", "_").replace(">", "_")}'
+
         def render_signature() -> str:
             # Skip a lot of computations if the function does not take any arguments
             if not any([func.posargs, func.optargs, func.kwargs, func.varargs]):
@@ -184,12 +176,15 @@ class GeneratorMD(GeneratorBase):
                 max_name_len = max([len(x.name) for x in all_args])
 
             # Generate some common strings
-            def prepare(arg: ArgBase) -> T.Tuple[str, str, str, str]:
+            def prepare(arg: ArgBase, link: bool = True) -> T.Tuple[str, str, str, str]:
                 type_str = render_type(arg.type, True)
                 type_len = len_stripped(type_str)
                 type_space = ' ' * (max_type_len - type_len)
                 name_space = ' ' * (max_name_len - len(arg.name))
                 name_str = f'<b>{arg.name.replace("<", "&lt;").replace(">", "&gt;")}</b>'
+                if link:
+                    name_str = f'<a href="#{arg_anchor(arg)}">{name_str}</a>'
+
                 return type_str, type_space, name_str, name_space
 
             for i in func.posargs:
@@ -201,7 +196,7 @@ class GeneratorMD(GeneratorBase):
                 signature += f'  {type_str}{type_space} [{name_str}],{name_space}   # {self.brief(i)}\n'
 
             if func.varargs:
-                type_str, type_space, name_str, name_space = prepare(func.varargs)
+                type_str, type_space, name_str, name_space = prepare(func.varargs, link=False)
                 signature += f'  {type_str}{type_space} {name_str}...,{name_space}  # {self.brief(func.varargs)}\n'
 
             # Abort if there are no kwargs
@@ -227,6 +222,7 @@ class GeneratorMD(GeneratorBase):
 
         def gen_arg_data(arg: T.Union[PosArg, Kwarg, VarArgs], *, optional: bool = False) -> T.Dict[str, PlaceholderTypes]:
             data: T.Dict[str, PlaceholderTypes] = {
+                'row-id': arg_anchor(arg),
                 'name': arg.name,
                 'type': render_type(arg.type),
                 'description': arg.description,
@@ -281,6 +277,7 @@ class GeneratorMD(GeneratorBase):
     def _write_object(self, obj: Object) -> None:
         data = {
             'name': obj.name,
+            'title': obj.long_name if obj.obj_type == ObjectType.RETURNED else obj.name,
             'description': obj.description,
             'notes': obj.notes,
             'warnings': obj.warnings,
