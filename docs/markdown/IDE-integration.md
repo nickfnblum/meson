@@ -93,12 +93,20 @@ can provide code completion for all source files.
 ```json
 {
     "language": "language ID",
+    "machine": "build" / "host",
     "compiler": ["The", "compiler", "command"],
     "parameters": ["list", "of", "compiler", "parameters"],
     "sources": ["list", "of", "all", "source", "files", "for", "this", "language"],
     "generated_sources": ["list", "of", "all", "source", "files", "that", "where", "generated", "somewhere", "else"]
 }
 ```
+
+*(New in 1.7.0)* The `machine` and `language` keys make it possible to
+to access further information about the compiler in the `compilers`
+introspection information.  `machine` can be absent if `language` is
+`unknown`.  In this case, information about the compiler is not
+available; Meson is therefore unable to know if the output relates
+to either the build of the host machine.
 
 It should be noted that the compiler parameters stored in the
 `parameters` differ from the actual parameters used to compile the
@@ -260,7 +268,7 @@ The list of all _found_ dependencies can be acquired from
 `intro-dependencies.json`. Here, the name, version, compiler and
 linker arguments for a dependency are listed.
 
-### Scanning for dependecie with `--scan-dependencies`
+### Scanning for dependencies with `--scan-dependencies`
 
 It is also possible to get most dependencies used without a build
 directory. This can be done by running `meson introspect
@@ -338,7 +346,7 @@ The output format is as follows:
 ```json
 [
     "/Path/to/the/targets/meson.build",
-    "/Path/to/the/targets/meson_options.txt",
+    "/Path/to/the/targets/meson.options",
     "/Path/to/the/targets/subdir/meson.build"
 ]
 ```
@@ -418,11 +426,12 @@ schema is defined by the class structure given in
 
 # Existing integrations
 
+- [CLion](https://www.jetbrains.com/clion/)
+- [Eclipse CDT](https://www.eclipse.org/cdt/)
 - [Gnome Builder](https://wiki.gnome.org/Apps/Builder)
 - [KDevelop](https://www.kdevelop.org)
-- [Eclipse CDT](https://www.eclipse.org/cdt/) (experimental)
-- [Meson Cmake Wrapper](https://github.com/prozum/meson-cmake-wrapper) (for cmake IDEs) (currently unmaintained !!)
-- [Meson-UI](https://github.com/michaelbadcrumble/meson-ui) (Meson build GUI)
-- [Meson Syntax Highlighter](https://plugins.jetbrains.com/plugin/13269-meson-syntax-highlighter) plugin for JetBrains IDEs.
-- [asabil.meson](https://open-vsx.org/extension/asabil/meson) extension for VS Code/Codium
-- [Qt Creator](https://doc.qt.io/qtcreator/creator-project-meson.html)
+- [Meson Syntax Highlighter](https://plugins.jetbrains.com/plugin/13269-meson-syntax-highlighter) 3rd party plugin for JetBrains IDEs.
+- [Meson-UI](https://github.com/dreamer-coding-555/meson-ui) (build GUI for Meson)
+- [mmeson](https://github.com/stephanlachnit/mmeson) (ccmake clone for Meson)
+- [Qt Creator](https://doc.qt.io/qtcreator/creator-project-meson.html) 
+- [vscode-meson](https://github.com/mesonbuild/vscode-meson) extension for VS Code/Codium

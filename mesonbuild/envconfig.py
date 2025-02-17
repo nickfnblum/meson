@@ -1,16 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2012-2016 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+from __future__ import annotations
 
 from dataclasses import dataclass
 import subprocess
@@ -27,7 +18,7 @@ from pathlib import Path
 # and cross file currently), and also assists with the reading environment
 # variables.
 #
-# At this time there isn't an ironclad difference between this an other sources
+# At this time there isn't an ironclad difference between this and other sources
 # of state like `coredata`. But one rough guide is much what is in `coredata` is
 # the *output* of the configuration process: the final decisions after tests.
 # This, on the other hand has *inputs*. The config files are parsed, but
@@ -43,6 +34,7 @@ known_cpu_families = (
     'arm',
     'avr',
     'c2000',
+    'c6000',
     'csky',
     'dspic',
     'e2k',
@@ -67,10 +59,12 @@ known_cpu_families = (
     'sh4',
     'sparc',
     'sparc64',
+    'sw_64',
     'wasm32',
     'wasm64',
     'x86',
     'x86_64',
+    'tricore'
 )
 
 # It would feel more natural to call this "64_BIT_CPU_FAMILIES", but
@@ -85,6 +79,7 @@ CPU_FAMILIES_64_BIT = [
     'riscv64',
     's390x',
     'sparc64',
+    'sw_64',
     'wasm64',
     'x86_64',
 ]
@@ -95,6 +90,7 @@ ENV_VAR_COMPILER_MAP: T.Mapping[str, str] = {
     'c': 'CC',
     'cpp': 'CXX',
     'cs': 'CSC',
+    'cython': 'CYTHON',
     'd': 'DC',
     'fortran': 'FC',
     'objc': 'OBJC',
@@ -132,7 +128,6 @@ ENV_VAR_TOOL_MAP: T.Mapping[str, str] = {
     # Other tools
     'cmake': 'CMAKE',
     'qmake': 'QMAKE',
-    'pkgconfig': 'PKG_CONFIG',
     'pkg-config': 'PKG_CONFIG',
     'make': 'MAKE',
     'vapigen': 'VAPIGEN',
@@ -160,13 +155,13 @@ class Properties:
             self,
             properties: T.Optional[T.Dict[str, T.Optional[T.Union[str, bool, int, T.List[str]]]]] = None,
     ):
-        self.properties = properties or {}  # type: T.Dict[str, T.Optional[T.Union[str, bool, int, T.List[str]]]]
+        self.properties = properties or {}
 
     def has_stdlib(self, language: str) -> bool:
         return language + '_stdlib' in self.properties
 
     # Some of get_stdlib, get_root, get_sys_root are wider than is actually
-    # true, but without heterogenious dict annotations it's not practical to
+    # true, but without heterogeneous dict annotations it's not practical to
     # narrow them
     def get_stdlib(self, language: str) -> T.Union[str, T.List[str]]:
         stdlib = self.properties[language + '_stdlib']
@@ -236,6 +231,12 @@ class Properties:
         value = T.cast('T.Optional[str]', self.properties.get('java_home'))
         return Path(value) if value else None
 
+    def get_bindgen_clang_args(self) -> T.List[str]:
+        value = mesonlib.listify(self.properties.get('bindgen_clang_arguments', []))
+        if not all(isinstance(v, str) for v in value):
+            raise EnvironmentException('bindgen_clang_arguments must be a string or an array of strings')
+        return T.cast('T.List[str]', value)
+
     def __eq__(self, other: object) -> bool:
         if isinstance(other, type(self)):
             return self.properties == other.properties
@@ -259,6 +260,8 @@ class MachineInfo(HoldableObject):
     cpu_family: str
     cpu: str
     endian: str
+    kernel: T.Optional[str]
+    subsystem: T.Optional[str]
 
     def __post_init__(self) -> None:
         self.is_64_bit: bool = self.cpu_family in CPU_FAMILIES_64_BIT
@@ -282,7 +285,11 @@ class MachineInfo(HoldableObject):
         if endian not in ('little', 'big'):
             mlog.warning(f'Unknown endian {endian}')
 
-        return cls(literal['system'], cpu_family, literal['cpu'], endian)
+        system = literal['system']
+        kernel = literal.get('kernel', None)
+        subsystem = literal.get('subsystem', None)
+
+        return cls(system, cpu_family, literal['cpu'], endian, kernel, subsystem)
 
     def is_windows(self) -> bool:
         """
@@ -350,6 +357,12 @@ class MachineInfo(HoldableObject):
         """
         return self.system == 'gnu'
 
+    def is_aix(self) -> bool:
+        """
+        Machine is aix?
+        """
+        return self.system == 'aix'
+
     def is_irix(self) -> bool:
         """Machine is IRIX?"""
         return self.system.startswith('irix')
@@ -385,6 +398,20 @@ class BinaryTable:
                     raise mesonlib.MesonException(
                         f'Invalid type {command!r} for entry {name!r} in cross file')
                 self.binaries[name] = mesonlib.listify(command)
+            if 'pkgconfig' in self.binaries:
+                if 'pkg-config' not in self.binaries:
+                    mlog.deprecation('"pkgconfig" entry is deprecated and should be replaced by "pkg-config"', fatal=False)
+                    self.binaries['pkg-config'] = self.binaries['pkgconfig']
+                elif self.binaries['pkgconfig'] != self.binaries['pkg-config']:
+                    raise mesonlib.MesonException('Mismatched pkgconfig and pkg-config binaries in the machine file.')
+                else:
+                    # Both are defined with the same value, this is allowed
+                    # for backward compatibility.
+                    # FIXME: We should still print deprecation warning if the
+                    # project targets Meson >= 1.3.0, but we have no way to know
+                    # that here.
+                    pass
+                del self.binaries['pkgconfig']
 
     @staticmethod
     def detect_ccache() -> T.List[str]:
@@ -412,16 +439,19 @@ class BinaryTable:
 
     @classmethod
     def parse_entry(cls, entry: T.Union[str, T.List[str]]) -> T.Tuple[T.List[str], T.List[str]]:
-        compiler = mesonlib.stringlistify(entry)
+        parts = mesonlib.stringlistify(entry)
         # Ensure ccache exists and remove it if it doesn't
-        if compiler[0] == 'ccache':
-            compiler = compiler[1:]
+        if parts[0] == 'ccache':
+            compiler = parts[1:]
             ccache = cls.detect_ccache()
-        elif compiler[0] == 'sccache':
-            compiler = compiler[1:]
+        elif parts[0] == 'sccache':
+            compiler = parts[1:]
             ccache = cls.detect_sccache()
         else:
+            compiler = parts
             ccache = []
+        if not compiler:
+            raise EnvironmentException(f'Compiler cache specified without compiler: {parts[0]}')
         # Return value has to be a list of compiler 'choices'
         return compiler, ccache
 
@@ -441,7 +471,7 @@ class BinaryTable:
 class CMakeVariables:
     def __init__(self, variables: T.Optional[T.Dict[str, T.Any]] = None) -> None:
         variables = variables or {}
-        self.variables = {}  # type: T.Dict[str, T.List[str]]
+        self.variables: T.Dict[str, T.List[str]] = {}
 
         for key, value in variables.items():
             value = mesonlib.listify(value)

@@ -42,6 +42,9 @@ description: |
   setcap = find_program(['setcap', '/usr/sbin/setcap', '/sbin/setcap'], required : false)
   ```
 
+  *Since 1.2.0* `find_program('meson')` is automatically overridden to the Meson
+  command used to execute the build script.
+
   The returned [[@external_program]] object also has documented methods.
 
 posargs:
@@ -95,18 +98,35 @@ kwargs:
       instead of a not-found object.
 
   version:
-    type: str
+    type: str | list[str]
     since: 0.52.0
     description: |
-      specifies the required version, see
-      [[dependency]] for argument format. The version of the program
+      Specifies the required version, see
+      [[dependency]] for argument format. By default, the version of the program
       is determined by running `program_name --version` command. If stdout is empty
       it fallbacks to stderr. If the output contains more text than simply a version
       number, only the first occurrence of numbers separated by dots is kept.
       If the output is more complicated than that, the version checking will have to
       be done manually using [[run_command]].
 
+  version_argument:
+    type: str
+    since: 1.5.0
+    description: |
+      Specifies the argument to pass when trying to find the version of the program.
+      If this is unspecified, `program_name --version` will be used.
+
   dirs:
     type: list[str]
     since: 0.53.0
     description: extra list of absolute paths where to look for program names.
+
+  default_options:
+    type: list[str] | dict[str | bool | int | list[str]]
+    since: 1.3.0
+    description: |
+      An array of default option values
+      that override those set in the subproject's `meson.options`
+      (like `default_options` in [[project]], they only have
+      effect when Meson is run for the first time, and command line
+      arguments override any default options in build files)

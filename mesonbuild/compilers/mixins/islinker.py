@@ -1,16 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2019 The Meson development team
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+
+from __future__ import annotations
 
 """Mixins for compilers that *are* linkers.
 
@@ -28,6 +19,7 @@ if T.TYPE_CHECKING:
     from ...coredata import KeyedOptionDictType
     from ...environment import Environment
     from ...compilers.compilers import Compiler
+    from ...build import BuildTarget
 else:
     # This is a bit clever, for mypy we pretend that these mixins descend from
     # Compiler, so we get all of the methods and attributes defined for us, but
@@ -67,7 +59,7 @@ class BasicLinkerIsCompilerMixin(Compiler):
     def get_linker_lib_prefix(self) -> str:
         return ''
 
-    def get_option_link_args(self, options: 'KeyedOptionDictType') -> T.List[str]:
+    def get_option_link_args(self, target: BuildTarget, env: Environment, subproject: T.Optional[str] = None) -> T.List[str]:
         return []
 
     def has_multi_link_args(self, args: T.List[str], env: 'Environment') -> T.Tuple[bool, bool]:
@@ -116,11 +108,11 @@ class BasicLinkerIsCompilerMixin(Compiler):
     def get_asneeded_args(self) -> T.List[str]:
         return []
 
-    def get_buildtype_linker_args(self, buildtype: str) -> T.List[str]:
+    def get_optimization_link_args(self, optimization_level: str) -> T.List[str]:
         return []
 
-    def get_link_debugfile_name(self, targetfile: str) -> str:
-        return ''
+    def get_link_debugfile_name(self, targetfile: str) -> T.Optional[str]:
+        return None
 
     def thread_flags(self, env: 'Environment') -> T.List[str]:
         return []

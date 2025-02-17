@@ -1,32 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2012-2017 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
+import re
 import subprocess, os.path
 import typing as T
 
-from ..mesonlib import EnvironmentException
+from .. import mlog
+from ..mesonlib import EnvironmentException, MesonException, version_compare
+from .compilers import Compiler, clike_debug_args
 
-from .compilers import Compiler, swift_buildtype_args, clike_debug_args
 
 if T.TYPE_CHECKING:
+    from ..dependencies import Dependency
     from ..envconfig import MachineInfo
     from ..environment import Environment
-    from ..linkers import DynamicLinker
+    from ..linkers.linkers import DynamicLinker
     from ..mesonlib import MachineChoice
 
-swift_optimization_args = {
+swift_optimization_args: T.Dict[str, T.List[str]] = {
     'plain': [],
     '0': [],
     'g': [],
@@ -34,7 +27,7 @@ swift_optimization_args = {
     '2': ['-O'],
     '3': ['-O'],
     's': ['-O'],
-}  # type: T.Dict[str, T.List[str]]
+}
 
 class SwiftCompiler(Compiler):
 
@@ -49,15 +42,48 @@ class SwiftCompiler(Compiler):
                          is_cross=is_cross, full_version=full_version,
                          linker=linker)
         self.version = version
+        if self.info.is_darwin():
+            try:
+                self.sdk_path = subprocess.check_output(['xcrun', '--show-sdk-path'],
+                                                        universal_newlines=True,
+                                                        encoding='utf-8', stderr=subprocess.STDOUT).strip()
+            except subprocess.CalledProcessError as e:
+                mlog.error("Failed to get Xcode SDK path: " + e.output)
+                raise MesonException('Xcode license not accepted yet. Run `sudo xcodebuild -license`.')
+            except FileNotFoundError:
+                mlog.error('xcrun not found. Install Xcode to compile Swift code.')
+                raise MesonException('Could not detect Xcode. Please install it to compile Swift code.')
+
+    def get_pic_args(self) -> T.List[str]:
+        return []
+
+    def get_pie_args(self) -> T.List[str]:
+        return []
 
     def needs_static_linker(self) -> bool:
         return True
 
     def get_werror_args(self) -> T.List[str]:
-        return ['--fatal-warnings']
+        return ['-warnings-as-errors']
 
     def get_dependency_gen_args(self, outtarget: str, outfile: str) -> T.List[str]:
         return ['-emit-dependencies']
+
+    def get_dependency_compile_args(self, dep: Dependency) -> T.List[str]:
+        args = dep.get_compile_args()
+        # Some deps might sneak in a hardcoded path to an older macOS SDK, which can
+        # cause compilation errors. Let's replace all .sdk paths with the current one.
+        # SwiftPM does it this way: https://github.com/swiftlang/swift-package-manager/pull/6772
+        # Not tested on anything else than macOS for now.
+        if not self.info.is_darwin():
+            return args
+        pattern = re.compile(r'.*\/MacOSX[^\/]*\.sdk(\/.*|$)')
+        for i, arg in enumerate(args):
+            if arg.startswith('-I'):
+                match = pattern.match(arg)
+                if match:
+                    args[i] = '-I' + self.sdk_path + match.group(1)
+        return args
 
     def depfile_for_object(self, objfile: str) -> T.Optional[str]:
         return os.path.splitext(objfile)[0] + '.' + self.get_depfile_suffix()
@@ -74,9 +100,6 @@ class SwiftCompiler(Compiler):
     def get_warn_args(self, level: str) -> T.List[str]:
         return []
 
-    def get_buildtype_args(self, buildtype: str) -> T.List[str]:
-        return swift_buildtype_args[buildtype]
-
     def get_std_exe_link_args(self) -> T.List[str]:
         return ['-emit-executable']
 
@@ -91,6 +114,12 @@ class SwiftCompiler(Compiler):
 
     def get_compile_only_args(self) -> T.List[str]:
         return ['-c']
+
+    def get_working_directory_args(self, path: str) -> T.Optional[T.List[str]]:
+        if version_compare(self.version, '<4.2'):
+            return None
+
+        return ['-working-directory', path]
 
     def compute_parameters_with_absolute_paths(self, parameter_list: T.List[str],
                                                build_dir: str) -> T.List[str]:
@@ -116,7 +145,7 @@ class SwiftCompiler(Compiler):
         pc = subprocess.Popen(self.exelist + extra_flags + ['-emit-executable', '-o', output_name, src], cwd=work_dir)
         pc.wait()
         if pc.returncode != 0:
-            raise EnvironmentException('Swift compiler %s can not compile programs.' % self.name_string())
+            raise EnvironmentException('Swift compiler %s cannot compile programs.' % self.name_string())
         if self.is_cross:
             # Can't check if the binaries run so we have to assume they do
             return

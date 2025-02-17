@@ -19,14 +19,14 @@ trigger:
     include:
     - 'master'
     # Release branches
-    - '0.*'
+    - '1.*'
   paths:
     include:
       - 'mesonbuild'
       - 'test cases'
       - 'unittests'
       - 'azure-pipelines.yml'
-      - 'ci/azure-steps.yml'
+      - 'ci/run.ps1'
       - 'run_project_tests.py'
       - 'run_tests.py'
       - 'run_unittests.py'
@@ -41,7 +41,7 @@ pr:
       - 'test cases'
       - 'unittests'
       - 'azure-pipelines.yml'
-      - 'ci/azure-steps.yml'
+      - 'ci/run.ps1'
       - 'run_project_tests.py'
       - 'run_tests.py'
       - 'run_unittests.py'
@@ -94,6 +94,8 @@ jobs:
   - bash: ci/intel-scripts/cache_exclude_windows.sh
     displayName: exclude unused files from cache
     condition: and(ne(variables.CACHE_RESTORED, 'true'), eq(variables.ifort, 'true'))
+  - script: choco install -y nasm
+    displayName: install NASM
   - task: UsePythonVersion@0
     inputs:
       versionSpec: '3.7'

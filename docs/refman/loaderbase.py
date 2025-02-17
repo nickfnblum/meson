@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2021 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 from abc import ABCMeta, abstractmethod
 from pathlib import Path
@@ -108,7 +97,7 @@ class _Resolver:
         for obj in func.returns.resolved:
             obj.data_type.returned_by += [func]
 
-        # Handle kwargs inehritance
+        # Handle kwargs inheritance
         for base_name in func.kwargs_inherit:
             base_name = base_name.strip()
             assert base_name in self.func_map, f'Unknown base function `{base_name}` for {func.name}'
@@ -123,7 +112,7 @@ class _Resolver:
             missing = {k: v for k, v in base.kwargs.items() if k in base_keys - curr_keys}
             func.kwargs.update(missing)
 
-        # Handloe other args inheritance
+        # Handle other args inheritance
         _T = T.TypeVar('_T', bound=T.Union[ArgBase, T.List[PosArg]])
         def resolve_inherit(name: str, curr: _T, resolver: T.Callable[[Function], _T]) -> _T:
             if name and not curr:

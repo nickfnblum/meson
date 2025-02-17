@@ -1,7 +1,11 @@
 project('nsstring', 'objc')
 
+if get_option('backend').startswith('vs')
+  error('MESON_SKIP_TEST: objc is not supported by vs backend')
+endif
+
 if host_machine.system() == 'darwin'
-  dep = dependency('appleframeworks', modules : 'foundation')
+  dep = dependency('appleframeworks', modules : 'Foundation')
 elif host_machine.system() == 'cygwin'
   error('MESON_SKIP_TEST GNUstep is not packaged for Cygwin.')
 else

@@ -47,7 +47,7 @@ ptr_size = meson.get_compiler('d').sizeof('void*')
 ## Deprecate an option and replace it with a new one
 
 The `deprecated` keyword argument can now take the name of a new option
-that replace this option. In that case, setting a value on the deprecated option
+that replaces this option. In that case, setting a value on the deprecated option
 will set the value on both the old and new names, assuming they accept the same
 values.
 
@@ -112,7 +112,7 @@ and the resulting directory tree will look like
 ## JAR Resources
 
 The ability to add resources to a JAR has been added. Use the `java_resources`
-keyword argument. It takes a `sturctured_src` object.
+keyword argument. It takes a `structured_src` object.
 
 ```meson
 jar(
