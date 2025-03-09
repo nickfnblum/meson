@@ -1,16 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2015 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+from __future__ import annotations
 
 import enum
 import os
@@ -85,7 +76,8 @@ class WindowsModule(ExtensionModule):
 
         if not rescomp or not rescomp.found():
             comp = self.detect_compiler(state.environment.coredata.compilers[for_machine])
-            if comp.id in {'msvc', 'clang-cl', 'intel-cl'}:
+            if comp.id in {'msvc', 'clang-cl', 'intel-cl'} or (comp.linker and comp.linker.id in {'link', 'lld-link'}):
+                # Microsoft compilers uses rc irrespective of the frontend
                 rescomp = ExternalProgram('rc', silent=True)
             else:
                 rescomp = ExternalProgram('windres', silent=True)
@@ -95,6 +87,7 @@ class WindowsModule(ExtensionModule):
 
         for (arg, match, rc_type) in [
                 ('/?', '^.*Microsoft.*Resource Compiler.*$', ResourceCompilerType.rc),
+                ('/?', 'LLVM Resource Converter.*$', ResourceCompilerType.rc),
                 ('--version', '^.*GNU windres.*$', ResourceCompilerType.windres),
                 ('--version', '^.*Wine Resource Compiler.*$', ResourceCompilerType.wrc),
         ]:
@@ -163,7 +156,7 @@ class WindowsModule(ExtensionModule):
                 elif isinstance(src, build.CustomTargetIndex):
                     FeatureNew.single_use('windows.compile_resource CustomTargetIndex in positional arguments', '0.61.0',
                                           state.subproject, location=state.current_node)
-                    # This dance avoids a case where two indexs of the same
+                    # This dance avoids a case where two indexes of the same
                     # target are given as separate arguments.
                     yield (f'{src.get_id()}_{src.target.get_outputs().index(src.output)}',
                            f'windows_compile_resources_{src.get_filename()}', src)
@@ -203,6 +196,7 @@ class WindowsModule(ExtensionModule):
                 depfile=depfile,
                 depend_files=wrc_depend_files,
                 extra_depends=wrc_depends,
+                description='Compiling Windows resource {}',
             ))
 
         return ModuleReturnValue(res_targets, [res_targets])

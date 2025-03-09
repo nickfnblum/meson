@@ -9,7 +9,7 @@ Meson provides four kinds of build targets: executables, libraries
 the build configuration time), static libraries, and shared libraries.
 They are created with the commands `executable`, `library`,
 `static_library` and `shared_library`, respectively. All objects created
-in this way are **immutable**. That is, you can not change any aspect of
+in this way are **immutable**. That is, you cannot change any aspect of
 them after they have been constructed. This ensures that all information
 pertaining to a given build target is specified in one well defined
 place.
@@ -36,7 +36,7 @@ ignored if the library is configured as static at the compile time.
 
 ```meson
 project('shared lib', 'c')
-library('mylib', 'source.c', version : '1.2.3', soversion : '0')
+library('mylib', 'source.c', version : '1.2.3', soversion : '1')
 ```
 
 It is common to build a library and then an executable that links

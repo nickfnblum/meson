@@ -14,7 +14,7 @@ Thank you for your interest in participating to the development.
 ## Submitting patches
 
 All changes must be submitted as [pull requests to
-Github](https://github.com/mesonbuild/meson/pulls). This causes them
+GitHub](https://github.com/mesonbuild/meson/pulls). This causes them
 to be run through the CI system. All submissions must pass a full CI
 test run before they are even considered for submission.
 
@@ -110,7 +110,7 @@ Meson's merge strategy should fulfill the following guidelines:
 
 These goals are slightly contradictory so the correct thing to do
 often requires some judgement on part of the person doing the
-merge. Github provides three different merge options, The rules of
+merge. GitHub provides three different merge options, The rules of
 thumb for choosing between them goes like this:
 
 - single commit pull requests should always be rebased
@@ -150,8 +150,8 @@ Subsets of project tests can be selected with
 time when only a certain part of Meson is being tested.
 For example, a useful and easy contribution to Meson is making
 sure the full set of compilers is supported. One could for example test
-various Fortran compilers by setting `FC=ifort` or `FC=flang` or similar
-with `./run_project_test.py --only fortran`.
+various Fortran compilers by setting `FC=ifort`, `FC=flang` or
+`FC=flang-new` or similar with `./run_project_test.py --only fortran`.
 Some families of tests require a particular backend to run.
 For example, all the CUDA project tests run and pass on Windows via
 `./run_project_tests.py --only cuda --backend ninja`
@@ -334,9 +334,11 @@ Each value must contain the `val` key for the value of the option.
 `null` can be used for adding matrix entries without the current
 option.
 
-The `skip_on_env`, `skip_on_jobname` and `skip_on_os` keys (as described below)
-may be used in the value to skip that matrix entry, based on the current
-environment.
+The `skip_on_env` key (as described below) may be used in the value to skip that
+matrix entry, based on the current environment.
+
+The `expect_skip_on_jobname` and `expect_skip_on_os` keys (as described below)
+may be used to expect that the test will be skipped, based on the current environment.
 
 Similarly, the `compilers` key can be used to define a mapping of
 compilers to languages that are required for this value.
@@ -412,23 +414,23 @@ The `skip_on_env` key can be used to specify a list of environment variables. If
 at least one environment variable in the `skip_on_env` list is present, the test
 is skipped.
 
-#### skip_on_jobname
+#### expect_skip_on_jobname
 
-The `skip_on_jobname` key contains a list of strings. If the `MESON_CI_JOBNAME`
+The `expect_skip_on_jobname` key contains a list of strings. If the `MESON_CI_JOBNAME`
 environment variable is set, and any of them are a sub-string of it, the test is
 expected to be skipped (that is, it is expected that the test will output
 `MESON_SKIP_TEST`, because the CI environment is not one in which it can run,
 for whatever reason).
 
-The test is failed if it skips or runs unexpectedly.
+The test is failed if it either skips unexpectedly or runs unexpectedly.
 
-#### skip_on_os
+#### expect_skip_on_os
 
-The `skip_on_os` key can be used to specify a list of OS names (or their
-negations, prefixed with a `!`).  If at least one item in the `skip_on_os` list
+The `expect_skip_on_os` key can be used to specify a list of OS names (or their
+negations, prefixed with a `!`).  If at least one item in the `expect_skip_on_os` list
 is matched, the test is expected to be skipped.
 
-The test is failed if it skips or runs unexpectedly.
+The test is failed if it either skips unexpectedly or runs unexpectedly.
 
 ### Skipping integration tests
 
@@ -450,7 +452,7 @@ To promote consistent naming policy, use:
 ## Documentation
 
 The `docs` directory contains the full documentation that will be used
-to generate [the Meson web site](http://mesonbuild.com). Line length
+to generate [the Meson web site](https://mesonbuild.com). Line length
 in most cases should not exceed 70 characters (lines containing links
 or examples are usually exempt). Every change in functionality must
 change the documentation pages. In most cases this means updating the
@@ -499,11 +501,58 @@ those are simple.
 - indent 4 spaces, no tabs ever
 - brace always on the same line as if/for/else/function definition
 
-## External dependencies
+## Dependency support policy
 
 The goal of Meson is to be as easily usable as possible. The user
 experience should be "get Python3 and Ninja, run", even on
-Windows. Unfortunately this means that we can't have dependencies on
+Windows.
+
+Additionally, Meson is popularly used in many core infrastructure packages in a
+Unix (and particularly, Linux) userland. This includes:
+- package managers, such as pacman (Arch Linux) and portage (Gentoo)
+- init systems (systemd, openrc, dinit)
+- graphics stacks (xorg, wayland, libdrm, Mesa, gtk)
+
+As such it needs to be able to run early on when bootstrapping a system from
+scratch.
+
+### Python
+
+We will always support all non EOL versions of CPython. Yes, there are people
+out there using and depending on every old version of python. In fact, there
+are people using and depending on systems that had a brand new python at the
+time of release, but with a much longer support cycle than Python itself. We
+need to balance the tradeoff between supporting those systems and being able to
+improve our own codebase and code quality.
+
+Meson will also be *honest* about what versions of python it supports. When a
+version of CPython becomes EOL, it becomes eligible to be removed from our
+support policy. We cannot guarantee continued support forever for software that
+is not supported by its own developers, even if some deprecated LTS systems out
+there still ship it. However, that doesn't mean we will drop support for those
+versions simply because they are old. If we are not using new functionality
+from new python versions, we will continue to mark Meson as compatible with the
+older version -- and test it in CI!
+
+(Note that contrary to popular belief, it is actually easier to test support
+for very old versions of python than it is to drop support for it. We already
+have the CI setup necessary for testing. Upgrading the CI to use newer versions
+of python, on the other hand, represents mildly painful administrative work
+that has to be done.)
+
+So, in order to start requiring a newer version of python, one should check a
+few factors:
+- are the older versions being dropped, already EOL? [Python EOL chart](https://endoflife.date/python)
+- document the new minimum version of corresponding OSes
+- rationalize the benefit of the change in terms of improvements to development
+  and maintenance of Meson. What new language features will be unlocked by the
+  upgrade, that Meson will be able to make good use of? Not every version has
+  new features requiring an upgrade, and not every new feature is so great we
+  need to drop everything to use it
+
+### External dependencies
+
+Unfortunately this also means that we can't have dependencies on
 projects outside of Python's standard library. This applies only to
 core functionality, though. For additional helper programs etc the use
 of external dependencies may be ok. If you feel that you are dealing

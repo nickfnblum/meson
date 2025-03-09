@@ -6,19 +6,23 @@ concurrency:
 
 on:
   push:
+    branches:
+      - master
+      # Stable branches such as 0.56 or 1.0
+      - '[0-9]+.[0-9]+'
     paths:
       - "mesonbuild/**"
       - "test cases/**"
       - "unittests/**"
       - ".github/workflows/msys2.yml"
-      - "run_unittests.py"
+      - "run*tests.py"
   pull_request:
     paths:
       - "mesonbuild/**"
       - "test cases/**"
       - "unittests/**"
       - ".github/workflows/msys2.yml"
-      - "run_unittests.py"
+      - "run*tests.py"
 
 permissions:
   contents: read
@@ -51,16 +55,13 @@ jobs:
             TOOLCHAIN: clang
     env:
       MESON_CI_JOBNAME: msys2-${{ matrix.NAME }}
-      # XXX: For some reason enabling jit debugging "fixes" random python crashes
-      # see https://github.com/msys2/MINGW-packages/issues/11864
-      MSYS: "winjitdebug"
 
     defaults:
       run:
         shell: msys2 {0}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - uses: msys2/setup-msys2@v2
         with:
@@ -83,11 +84,13 @@ jobs:
             mingw-w64-${{ matrix.MSYS2_ARCH }}-python-lxml
             mingw-w64-${{ matrix.MSYS2_ARCH }}-python-setuptools
             mingw-w64-${{ matrix.MSYS2_ARCH }}-python-pip
+            mingw-w64-${{ matrix.MSYS2_ARCH }}-python-fastjsonschema
+            mingw-w64-${{ matrix.MSYS2_ARCH }}-objfw
             mingw-w64-${{ matrix.MSYS2_ARCH }}-${{ matrix.TOOLCHAIN }}
 
       - name: Install dependencies
         run: |
-          python3 -m pip --disable-pip-version-check install gcovr jsonschema pefile pytest pytest-subtests pytest-xdist coverage codecov
+          python3 -m pip --disable-pip-version-check install gcovr pefile pytest pytest-subtests pytest-xdist coverage
 
       - name: Install pypy3 on x86_64
         run: |
@@ -102,7 +105,7 @@ jobs:
       - name: Run Tests
         run: |
           if [[ "${{ matrix.MSYS2_ARCH }}" == "x86_64" ]]; then
-            # There apparently is no clean way to add to the PATH in the 
+            # There apparently is no clean way to add to the PATH in the
             # previous step?
             # See for instance https://github.com/msys2/setup-msys2/issues/171
             export PATH=$PATH:$PWD/pypy3local
@@ -124,10 +127,18 @@ jobs:
 
           MSYSTEM= python3 ./tools/run_with_cov.py run_tests.py --backend=ninja
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.NAME }}
           path: meson-test-run.*
 
+      - name: Aggregate coverage reports
+        run: ./ci/combine_cov.sh
+
       - name: Upload coverage report
-        run: ./ci/upload_cov.sh "${{ matrix.NAME }}"
+        uses: codecov/codecov-action@v3
+        with:
+          files: .coverage/coverage.xml
+          name: "${{ matrix.NAME }}"
+          fail_ci_if_error: false
+          verbose: true

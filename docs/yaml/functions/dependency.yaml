@@ -78,14 +78,15 @@ varargs:
 
 kwargs:
   default_options:
-    type: list[str]
+    type: list[str] | dict[str | bool | int | list[str]]
     since: 0.38.0
     description: |
       An array of default option values
-      that override those set in the subproject's `meson_options.txt`
+      that override those set in the subproject's `meson.options`
       (like `default_options` in [[project]], they only have
       effect when Meson is run for the first time, and command line
       arguments override any default options in build files)
+      *(since 1.2.0)*: A dictionary may now be passed.
 
   allow_fallback:
     type: bool
@@ -158,13 +159,16 @@ kwargs:
     type: bool | feature
     default: true
     description: |
-      when set to false, Meson will proceed with the build
-      even if the dependency is not found. *(since 0.47.0)* The value of a
-      [`feature`](Build-options.md#features) option can also be passed.
+      When set to `false`, Meson will proceed with the build
+      even if the dependency is not found.
+
+      When set to a [`feature`](Build-options.md#features) option, the feature
+      will control if it is searched and whether to fail if not found.
+
+      *(since 0.47.0)* The value of a `feature` option can also be passed.
 
   static:
     type: bool
-    default: false
     description: |
       Tells the dependency provider to try to get static
       libraries instead of dynamic ones (note that this is not supported
@@ -173,8 +177,11 @@ kwargs:
       *Since 0.60.0* it also sets `default_library` option accordingly on the fallback
       subproject if it was not set explicitly in `default_options` keyword argument.
 
+      *Since 0.63.0* when the `prefer_static` option is set to `true` the default
+      value is `true` otherwise the default value is `false`.
+
   version:
-    type: str
+    type: list[str] | str
     since: 0.37.0
     description: |
       Specifies the required version,

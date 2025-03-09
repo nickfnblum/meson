@@ -219,7 +219,7 @@ the following command-line options:
 * **--wrap-mode=nodownload**
 
     Meson will not use the network to download any subprojects or
-    fetch any wrap information. Only pre-existing sources will be used.
+    fetch any wrap information. Only preexisting sources will be used.
     This is useful (mostly for distros) when you want to only use the
     sources provided by a software release, and want to manually handle
     or provide missing dependencies.
@@ -300,7 +300,7 @@ types. Multiple types can be set as comma separated list e.g. `--types
 git,file`.
 
 *Since 0.56.0* If the subcommand fails on any subproject an error code
-is returned at the end instead of retuning success.
+is returned at the end instead of returning success.
 
 ### Download subprojects
 

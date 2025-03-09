@@ -79,6 +79,11 @@ assert(not version_number.version_compare('!=1.2.8'), 'Version_compare neq broke
 assert(version_number.version_compare('<2.0'), 'Version_compare major less broken')
 assert(version_number.version_compare('>0.9'), 'Version_compare major greater broken')
 
+assert(version_number.version_compare('>1.2', '<1.3'))
+assert(not version_number.version_compare('>1.2', '>1.3'))
+assert(not version_number.version_compare('<1.2', '<1.3'))
+assert(version_number.version_compare('>1.0', '>1.2'))
+
 assert(' spaces	tabs	'.strip() == 'spaces	tabs', 'Spaces and tabs badly stripped')
 assert('''
 multiline string	'''.strip() == '''multiline string''', 'Newlines badly stripped')
@@ -125,3 +130,15 @@ assert(mysubstring.substring(10, -25) == '', 'substring is broken')
 assert(mysubstring.substring(-4, 2) == '', 'substring is broken')
 assert(mysubstring.substring(10, 9) == '', 'substring is broken')
 assert(mysubstring.substring(8, 10) == 'z', 'substring is broken')
+
+# str.splitlines()
+assert('foo\nbar\nbaz'.splitlines() == ['foo', 'bar', 'baz'], 'splitlines is broken')
+assert(''.splitlines() == [], 'splitlines with empty string is broken')
+assert('foo\rbar\nbaz\n'.splitlines() == ['foo', 'bar', 'baz'], 'splitlines trailing newline is broken')
+assert('hello\r\nworld'.splitlines() == ['hello', 'world'])
+assert(
+  '  leading ws\nand trailing\t'.splitlines() == ['  leading ws', 'and trailing\t'],
+  'splitlines leading/trailing whitespace is broken',
+)
+assert('\n\r\n\r'.splitlines() == ['', '', ''], 'splitlines is broken')
+assert('foo'.splitlines() == ['foo'], 'splitlines is broken')

@@ -62,7 +62,7 @@ executable('myprog', sources : '*.cpp') # This does NOT work!
 ```
 
 Meson does not support this syntax and the reason for this is simple.
-This can not be made both reliable and fast. By reliable we mean that
+This cannot be made both reliable and fast. By reliable we mean that
 if the user adds a new source file to the subdirectory, Meson should
 detect that and make it part of the build automatically.
 
@@ -149,7 +149,7 @@ subdir('tests') # test binaries would link against the library here
 ## Why is there not a Make backend?
 
 Because Make is slow. This is not an implementation issue, Make simply
-can not be made fast. For further info we recommend you read [this
+cannot be made fast. For further info we recommend you read [this
 post](http://neugierig.org/software/chromium/notes/2011/02/ninja.html)
 by Evan Martin, the author of Ninja. Makefiles also have a syntax that
 is very unpleasant to write which makes them a big maintenance burden.
@@ -333,6 +333,24 @@ that could fulfill these requirements:
 Out of these we have chosen Python because it is the best fit for our
 needs.
 
+## Do you at least support my ancient python install?
+
+Yes! :) We have a relatively sedate version support policy. You can read about
+it in the [Contributing documentation](Contributing.md#python)
+
+We are also willing to support old versions of meson as LTS releases,
+particularly, if it is the final version to support a given python version. If
+you have a use case, please discuss it with us and be willing to help backport
+bug fixes.
+
+- python 3.5: [supported through Meson 0.56.2](Release-notes-for-0.56.0.md#python-35-support-will-be-dropped-in-the-next-release)
+- python 3.6: [supported through Meson 0.61.5](Release-notes-for-0.61.0.md#python-36-support-will-be-dropped-in-the-next-release)
+- python 3.7: currently actively supported by Meson
+
+We encourage projects to support a wide range of Meson versions if they are not
+actually using the latest features anyway. In many, many cases it is quite
+practical to support e.g. Meson 0.61.
+
 ## But I really want a version of Meson that doesn't use python!
 
 Ecosystem diversity is good. We encourage interested users to write this
@@ -348,7 +366,7 @@ projects attempting to do just this:
 Meson needs to know several details about each compiler in order to
 compile code with it. These include things such as which compiler
 flags to use for each option and how to detect the compiler from its
-output. This information can not be input via a configuration file,
+output. This information cannot be input via a configuration file,
 instead it requires changes to Meson's source code that need to be
 submitted to Meson master repository. In theory you can run your own
 forked version with custom patches, but that's not good use of your
@@ -405,6 +423,9 @@ advantages:
    not care what the extension is](https://docs.microsoft.com/en-us/cpp/build/reference/link-input-files?view=vs-2019),
    so specifying `libfoo.a` instead of `foo.lib` does not change the workflow,
    and is an improvement since it's less ambiguous.
+1. Projects built with the MinGW compiler are fully compatible with
+   MSVC as long as they use the same CRT (e.g. UCRT with MSYS2).
+   These projects also name their static libraries `libfoo.a`.
 
 If, for some reason, you really need your project to output static
 libraries of the form `foo.lib` when building with MSVC, you can set
@@ -692,3 +713,16 @@ directory. It glob ignores ```"*"```, since all generated files should not be
 checked into git.
 
 Users of older versions of Meson may need to set up ignore files themselves.
+
+## How to add preprocessor defines to a target?
+
+Just add `-DFOO` to `c_args` or `cpp_args`. This works for all known compilers.
+
+```meson
+mylib = library('mylib', 'mysource.c', c_args: ['-DFOO'])
+```
+
+Even though [MSVC documentation](https://learn.microsoft.com/en-us/cpp/build/reference/d-preprocessor-definitions)
+uses `/D` for preprocessor defines, its [command-line syntax](https://learn.microsoft.com/en-us/cpp/build/reference/compiler-command-line-syntax)
+accepts `-` instead of `/`.
+It's not necessary to treat preprocessor defines specially in Meson ([GH-6269](https://github.com/mesonbuild/meson/issues/6269#issuecomment-560003922)).

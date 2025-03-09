@@ -143,6 +143,8 @@ test('test5', executable('prog5', 'prog5.c'))
 conf6 = configuration_data()
 conf6.set('var1', 'foo')
 conf6.set('var2', 'bar')
+conf6.set('var3', 'baz')
+conf6.set('var4', 'qux')
 configure_file(
   input : 'config6.h.in',
   output : '@BASENAME@',
@@ -161,7 +163,7 @@ cfile = configure_file(input : 'config.h.in',
   install_dir : false,
   configuration : conf)
 
-# test intsall_dir with install: false
+# test install_dir with install: false
 cfile = configure_file(input : 'config.h.in',
   output : 'do_not_get_installed_in_install_dir.h',
   install : false,
@@ -210,7 +212,11 @@ endif
 # Test the fs replacement
 # Test copying of an empty configuration data object
 inf = 'invalid-utf8.bin.in'
-outf = fs.copyfile(inf, 'invalid-utf8-1.bin')
+outf = fs.copyfile(inf, 'invalid-utf8-1.bin',
+  install: true,
+  install_dir: get_option('datadir') / meson.project_name(),
+  install_tag: 'copyfile',
+)
 test('fs.copyfile string', check_file, args: [files(inf), outf])
 
 # Test with default outname of string
@@ -304,9 +310,15 @@ cdata = configuration_data({
   'A_UNDEFINED' : false,
 })
 
+# merging a confdata into another one should not mark the first as immutable
+cdata_test = configuration_data()
+cdata_test.merge_from(cdata)
+cdata.set_quoted('A_PATH', '/random/path')
+
 configure_file(output : 'config9a.h',
   configuration : cdata,
 )
+
 
 configure_file(output : 'config9b.h',
   configuration : {
@@ -318,6 +330,16 @@ configure_file(output : 'config9b.h',
 )
 
 test('test9', executable('prog9', 'prog9.c'))
+
+# Test @ and curly braces at the same time with cmake format
+conf10 = configuration_data()
+conf10.set('var', 'foo')
+configure_file(
+  input : 'config10.h.in',
+  output : '@BASENAME@',
+  format : 'cmake',
+  configuration : conf10)
+test('test10', executable('prog10', 'prog10.c'))
 
 check_inputs = find_program('check_inputs.py')
 configure_file(output : 'check_inputs.txt',
