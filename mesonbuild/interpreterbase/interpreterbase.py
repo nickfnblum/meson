@@ -1,49 +1,35 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2017 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 # This class contains the basic functionality needed to run any interpreter
 # or an interpreter-based tool.
 from __future__ import annotations
 
-from .. import mparser, mesonlib
-from .. import environment
+from .. import environment, mparser, mesonlib
 
 from .baseobjects import (
     InterpreterObject,
     MesonInterpreterObject,
     MutableInterpreterObject,
-    InterpreterObjectTypeVar,
     ObjectHolder,
     IterableObject,
-
-    TYPE_var,
+    ContextManagerObject,
 
     HoldableTypes,
 )
 
 from .exceptions import (
-    InterpreterException,
-    InvalidCode,
-    InvalidArguments,
-    SubdirDoneRequest,
+    BreakRequest,
     ContinueRequest,
-    BreakRequest
+    InterpreterException,
+    InvalidArguments,
+    InvalidCode,
+    SubdirDoneRequest,
 )
 
 from .decorators import FeatureNew
 from .disabler import Disabler, is_disabled
-from .helpers import default_resolve_key, flatten, resolve_second_level_holders
+from .helpers import default_resolve_key, flatten, resolve_second_level_holders, stringifyUserArguments
 from .operator import MesonOperator
 from ._unholder import _unholder
 
@@ -52,26 +38,33 @@ import typing as T
 import textwrap
 
 if T.TYPE_CHECKING:
-    from .baseobjects import SubProject, TYPE_kwargs
+    from .baseobjects import InterpreterObjectTypeVar, SubProject, TYPE_kwargs, TYPE_var
     from ..interpreter import Interpreter
 
-HolderMapType = T.Dict[
-    T.Union[
-        T.Type[mesonlib.HoldableObject],
-        T.Type[int],
-        T.Type[bool],
-        T.Type[str],
-        T.Type[list],
-        T.Type[dict],
-    ],
-    # For some reason, this has to be a callable and can't just be ObjectHolder[InterpreterObjectTypeVar]
-    T.Callable[[InterpreterObjectTypeVar, 'Interpreter'], ObjectHolder[InterpreterObjectTypeVar]]
-]
+    HolderMapType = T.Dict[
+        T.Union[
+            T.Type[mesonlib.HoldableObject],
+            T.Type[int],
+            T.Type[bool],
+            T.Type[str],
+            T.Type[list],
+            T.Type[dict],
+        ],
+        # For some reason, this has to be a callable and can't just be ObjectHolder[InterpreterObjectTypeVar]
+        T.Callable[[InterpreterObjectTypeVar, 'Interpreter'], ObjectHolder[InterpreterObjectTypeVar]]
+    ]
 
-FunctionType = T.Dict[
-    str,
-    T.Callable[[mparser.BaseNode, T.List[TYPE_var], T.Dict[str, TYPE_var]], TYPE_var]
-]
+    FunctionType = T.Dict[
+        str,
+        T.Callable[[mparser.BaseNode, T.List[TYPE_var], T.Dict[str, TYPE_var]], TYPE_var]
+    ]
+
+
+class InvalidCodeOnVoid(InvalidCode):
+
+    def __init__(self, op_type: str) -> None:
+        super().__init__(f'Cannot perform {op_type!r} operation on void statement.')
+
 
 class InterpreterBase:
     def __init__(self, source_root: str, subdir: str, subproject: 'SubProject'):
@@ -89,26 +82,43 @@ class InterpreterBase:
         self.current_lineno = -1
         # Current node set during a function call. This can be used as location
         # when printing a warning message during a method call.
-        self.current_node = None  # type: mparser.BaseNode
+        self.current_node = mparser.BaseNode(-1, -1, 'sentinel')
         # This is set to `version_string` when this statement is evaluated:
         # meson.version().compare_version(version_string)
         # If it was part of a if-clause, it is used to temporally override the
         # current meson version target within that if-block.
-        self.tmp_meson_version = None # type: T.Optional[str]
+        self.tmp_meson_version: T.Optional[str] = None
+
+    def handle_meson_version_from_ast(self, strict: bool = True) -> None:
+        # do nothing in an AST interpreter
+        return
+
+    def read_buildfile(self, fname: str, errname: str) -> str:
+        try:
+            with open(fname, encoding='utf-8') as f:
+                return f.read()
+        except UnicodeDecodeError as e:
+            node = mparser.BaseNode(1, 1, errname)
+            raise InvalidCode.from_node(f'Build file failed to parse as unicode: {e}', node=node)
 
     def load_root_meson_file(self) -> None:
         mesonfile = os.path.join(self.source_root, self.subdir, environment.build_filename)
         if not os.path.isfile(mesonfile):
             raise InvalidArguments(f'Missing Meson file in {mesonfile}')
-        with open(mesonfile, encoding='utf-8') as mf:
-            code = mf.read()
+        code = self.read_buildfile(mesonfile, mesonfile)
         if code.isspace():
             raise InvalidCode('Builder file is empty.')
         assert isinstance(code, str)
         try:
             self.ast = mparser.Parser(code, mesonfile).parse()
-        except mesonlib.MesonException as me:
+            self.handle_meson_version_from_ast()
+        except mparser.ParseException as me:
             me.file = mesonfile
+            if me.ast:
+                # try to detect parser errors from new syntax added by future
+                # meson versions, and just tell the user to update meson
+                self.ast = me.ast
+                self.handle_meson_version_from_ast()
             raise me
 
     def parse_project(self) -> None:
@@ -119,20 +129,30 @@ class InterpreterBase:
         self.evaluate_codeblock(self.ast, end=1)
 
     def sanity_check_ast(self) -> None:
-        if not isinstance(self.ast, mparser.CodeBlockNode):
-            raise InvalidCode('AST is of invalid type. Possibly a bug in the parser.')
-        if not self.ast.lines:
-            raise InvalidCode('No statements in code.')
-        first = self.ast.lines[0]
-        if not isinstance(first, mparser.FunctionNode) or first.func_name != 'project':
+        def _is_project(ast: mparser.CodeBlockNode) -> object:
+            if not isinstance(ast, mparser.CodeBlockNode):
+                raise InvalidCode('AST is of invalid type. Possibly a bug in the parser.')
+            if not ast.lines:
+                raise InvalidCode('No statements in code.')
+            first = ast.lines[0]
+            return isinstance(first, mparser.FunctionNode) and first.func_name.value == 'project'
+
+        if not _is_project(self.ast):
             p = pathlib.Path(self.source_root).resolve()
             found = p
             for parent in p.parents:
                 if (parent / 'meson.build').is_file():
                     with open(parent / 'meson.build', encoding='utf-8') as f:
-                        if f.readline().startswith('project('):
-                            found = parent
-                            break
+                        code = f.read()
+
+                    try:
+                        ast = mparser.Parser(code, 'empty').parse()
+                    except mparser.ParseException:
+                        continue
+
+                    if _is_project(ast):
+                        found = parent
+                        break
                 else:
                     break
 
@@ -163,13 +183,13 @@ class InterpreterBase:
         while i < len(statements):
             cur = statements[i]
             try:
-                self.current_lineno = cur.lineno
                 self.evaluate_statement(cur)
             except Exception as e:
                 if getattr(e, 'lineno', None) is None:
                     # We are doing the equivalent to setattr here and mypy does not like it
-                    e.lineno = cur.lineno                                                             # type: ignore
-                    e.colno = cur.colno                                                               # type: ignore
+                    # NOTE: self.current_node is continually updated during processing
+                    e.lineno = self.current_node.lineno                                               # type: ignore
+                    e.colno = self.current_node.colno                                                 # type: ignore
                     e.file = os.path.join(self.source_root, self.subdir, environment.build_filename)  # type: ignore
                 raise e
             i += 1 # In THE FUTURE jump over blocks and stuff.
@@ -178,12 +198,20 @@ class InterpreterBase:
         self.current_node = cur
         if isinstance(cur, mparser.FunctionNode):
             return self.function_call(cur)
+        elif isinstance(cur, mparser.PlusAssignmentNode):
+            self.evaluate_plusassign(cur)
         elif isinstance(cur, mparser.AssignmentNode):
             self.assignment(cur)
         elif isinstance(cur, mparser.MethodNode):
             return self.method_call(cur)
         elif isinstance(cur, mparser.StringNode):
-            return self._holderify(cur.value)
+            if cur.is_fstring:
+                if cur.is_multiline:
+                    return self.evaluate_multiline_fstring(cur)
+                else:
+                    return self.evaluate_fstring(cur)
+            else:
+                return self._holderify(cur.value)
         elif isinstance(cur, mparser.BooleanNode):
             return self._holderify(cur.value)
         elif isinstance(cur, mparser.IfClauseNode):
@@ -210,21 +238,18 @@ class InterpreterBase:
             return self.evaluate_arithmeticstatement(cur)
         elif isinstance(cur, mparser.ForeachClauseNode):
             self.evaluate_foreach(cur)
-        elif isinstance(cur, mparser.PlusAssignmentNode):
-            self.evaluate_plusassign(cur)
         elif isinstance(cur, mparser.IndexNode):
             return self.evaluate_indexing(cur)
         elif isinstance(cur, mparser.TernaryNode):
             return self.evaluate_ternary(cur)
-        elif isinstance(cur, mparser.FormatStringNode):
-            if isinstance(cur, mparser.MultilineFormatStringNode):
-                return self.evaluate_multiline_fstring(cur)
-            else:
-                return self.evaluate_fstring(cur)
         elif isinstance(cur, mparser.ContinueNode):
             raise ContinueRequest()
         elif isinstance(cur, mparser.BreakNode):
             raise BreakRequest()
+        elif isinstance(cur, mparser.ParenthesizedNode):
+            return self.evaluate_statement(cur.inner)
+        elif isinstance(cur, mparser.TestCaseClauseNode):
+            return self.evaluate_testcase(cur)
         else:
             raise InvalidCode("Unknown statement.")
         return None
@@ -240,7 +265,10 @@ class InterpreterBase:
         def resolve_key(key: mparser.BaseNode) -> str:
             if not isinstance(key, mparser.StringNode):
                 FeatureNew.single_use('Dictionary entry using non literal key', '0.53.0', self.subproject)
-            str_key = _unholder(self.evaluate_statement(key))
+            key_holder = self.evaluate_statement(key)
+            if key_holder is None:
+                raise InvalidArguments('Key cannot be void.')
+            str_key = _unholder(key_holder)
             if not isinstance(str_key, str):
                 raise InvalidArguments('Key must be a string')
             return str_key
@@ -250,6 +278,8 @@ class InterpreterBase:
 
     def evaluate_notstatement(self, cur: mparser.NotNode) -> InterpreterObject:
         v = self.evaluate_statement(cur.value)
+        if v is None:
+            raise InvalidCodeOnVoid('not')
         if isinstance(v, Disabler):
             return v
         return self._holderify(v.operator_call(MesonOperator.NOT, None))
@@ -261,10 +291,12 @@ class InterpreterBase:
             # statement evaluation.
             self.tmp_meson_version = None
             result = self.evaluate_statement(i.condition)
+            if result is None:
+                raise InvalidCodeOnVoid('if')
             if isinstance(result, Disabler):
                 return result
             if not isinstance(result, InterpreterObject):
-                raise mesonlib.MesonBugException(f'Argument to not ({result}) is not an InterpreterObject but {type(result).__name__}.')
+                raise mesonlib.MesonBugException(f'Argument to if ({result}) is not an InterpreterObject but {type(result).__name__}.')
             res = result.operator_call(MesonOperator.BOOL, None)
             if not isinstance(res, bool):
                 raise InvalidCode(f'If clause {result!r} does not evaluate to true or false.')
@@ -278,14 +310,28 @@ class InterpreterBase:
                     mesonlib.project_meson_versions[self.subproject] = prev_meson_version
                 return None
         if not isinstance(node.elseblock, mparser.EmptyNode):
-            self.evaluate_codeblock(node.elseblock)
+            self.evaluate_codeblock(node.elseblock.block)
+        return None
+
+    def evaluate_testcase(self, node: mparser.TestCaseClauseNode) -> T.Optional[Disabler]:
+        result = self.evaluate_statement(node.condition)
+        if isinstance(result, Disabler):
+            return result
+        if not isinstance(result, ContextManagerObject):
+            raise InvalidCode(f'testcase clause {result!r} does not evaluate to a context manager.')
+        with result:
+            self.evaluate_codeblock(node.block)
         return None
 
     def evaluate_comparison(self, node: mparser.ComparisonNode) -> InterpreterObject:
         val1 = self.evaluate_statement(node.left)
+        if val1 is None:
+            raise mesonlib.MesonException('Cannot compare a void statement on the left-hand side')
         if isinstance(val1, Disabler):
             return val1
         val2 = self.evaluate_statement(node.right)
+        if val2 is None:
+            raise mesonlib.MesonException('Cannot compare a void statement on the right-hand side')
         if isinstance(val2, Disabler):
             return val2
 
@@ -310,30 +356,40 @@ class InterpreterBase:
 
     def evaluate_andstatement(self, cur: mparser.AndNode) -> InterpreterObject:
         l = self.evaluate_statement(cur.left)
+        if l is None:
+            raise mesonlib.MesonException('Cannot compare a void statement on the left-hand side')
         if isinstance(l, Disabler):
             return l
         l_bool = l.operator_call(MesonOperator.BOOL, None)
         if not l_bool:
             return self._holderify(l_bool)
         r = self.evaluate_statement(cur.right)
+        if r is None:
+            raise mesonlib.MesonException('Cannot compare a void statement on the right-hand side')
         if isinstance(r, Disabler):
             return r
         return self._holderify(r.operator_call(MesonOperator.BOOL, None))
 
     def evaluate_orstatement(self, cur: mparser.OrNode) -> InterpreterObject:
         l = self.evaluate_statement(cur.left)
+        if l is None:
+            raise mesonlib.MesonException('Cannot compare a void statement on the left-hand side')
         if isinstance(l, Disabler):
             return l
         l_bool = l.operator_call(MesonOperator.BOOL, None)
         if l_bool:
             return self._holderify(l_bool)
         r = self.evaluate_statement(cur.right)
+        if r is None:
+            raise mesonlib.MesonException('Cannot compare a void statement on the right-hand side')
         if isinstance(r, Disabler):
             return r
         return self._holderify(r.operator_call(MesonOperator.BOOL, None))
 
     def evaluate_uminusstatement(self, cur: mparser.UMinusNode) -> InterpreterObject:
         v = self.evaluate_statement(cur.value)
+        if v is None:
+            raise InvalidCodeOnVoid('unary minus')
         if isinstance(v, Disabler):
             return v
         v.current_node = cur
@@ -346,6 +402,8 @@ class InterpreterBase:
         r = self.evaluate_statement(cur.right)
         if isinstance(r, Disabler):
             return r
+        if l is None or r is None:
+            raise InvalidCodeOnVoid(cur.operation)
 
         mapping: T.Dict[str, MesonOperator] = {
             'add': MesonOperator.PLUS,
@@ -361,6 +419,8 @@ class InterpreterBase:
     def evaluate_ternary(self, node: mparser.TernaryNode) -> T.Optional[InterpreterObject]:
         assert isinstance(node, mparser.TernaryNode)
         result = self.evaluate_statement(node.condition)
+        if result is None:
+            raise mesonlib.MesonException('Cannot use a void statement as condition for ternary operator.')
         if isinstance(result, Disabler):
             return result
         result.current_node = node
@@ -371,22 +431,21 @@ class InterpreterBase:
             return self.evaluate_statement(node.falseblock)
 
     @FeatureNew('multiline format strings', '0.63.0')
-    def evaluate_multiline_fstring(self, node: mparser.MultilineFormatStringNode) -> InterpreterObject:
+    def evaluate_multiline_fstring(self, node: mparser.StringNode) -> InterpreterObject:
         return self.evaluate_fstring(node)
 
     @FeatureNew('format strings', '0.58.0')
-    def evaluate_fstring(self, node: mparser.FormatStringNode) -> InterpreterObject:
-        assert isinstance(node, mparser.FormatStringNode)
-
+    def evaluate_fstring(self, node: mparser.StringNode) -> InterpreterObject:
         def replace(match: T.Match[str]) -> str:
             var = str(match.group(1))
             try:
                 val = _unholder(self.variables[var])
-                if not isinstance(val, (str, int, float, bool)):
-                    raise InvalidCode(f'Identifier "{var}" does not name a formattable variable ' +
-                                      '(has to be an integer, a string, a floating point number or a boolean).')
-
-                return str(val)
+                if isinstance(val, (list, dict)):
+                    FeatureNew.single_use('List or dictionary in f-string', '1.3.0', self.subproject, location=self.current_node)
+                try:
+                    return stringifyUserArguments(val, self.subproject)
+                except InvalidArguments as e:
+                    raise InvalidArguments(f'f-string: {str(e)}')
             except KeyError:
                 raise InvalidCode(f'Identifier "{var}" does not name a variable.')
 
@@ -407,14 +466,14 @@ class InterpreterBase:
             if tsize is None:
                 if isinstance(i, tuple):
                     raise mesonlib.MesonBugException(f'Iteration of {items} returned a tuple even though iter_tuple_size() is None')
-                self.set_variable(node.varnames[0], self._holderify(i))
+                self.set_variable(node.varnames[0].value, self._holderify(i))
             else:
                 if not isinstance(i, tuple):
                     raise mesonlib.MesonBugException(f'Iteration of {items} did not return a tuple even though iter_tuple_size() is {tsize}')
                 if len(i) != tsize:
                     raise mesonlib.MesonBugException(f'Iteration of {items} did not return a tuple even though iter_tuple_size() is {tsize}')
                 for j in range(tsize):
-                    self.set_variable(node.varnames[j], self._holderify(i[j]))
+                    self.set_variable(node.varnames[j].value, self._holderify(i[j]))
             try:
                 self.evaluate_codeblock(node.block)
             except ContinueRequest:
@@ -424,8 +483,10 @@ class InterpreterBase:
 
     def evaluate_plusassign(self, node: mparser.PlusAssignmentNode) -> None:
         assert isinstance(node, mparser.PlusAssignmentNode)
-        varname = node.var_name
+        varname = node.var_name.value
         addition = self.evaluate_statement(node.value)
+        if addition is None:
+            raise InvalidCodeOnVoid('plus assign')
 
         # Remember that all variables are immutable. We must always create a
         # full new variable and then assign it.
@@ -437,17 +498,20 @@ class InterpreterBase:
     def evaluate_indexing(self, node: mparser.IndexNode) -> InterpreterObject:
         assert isinstance(node, mparser.IndexNode)
         iobject = self.evaluate_statement(node.iobject)
+        if iobject is None:
+            raise InterpreterException('Tried to evaluate indexing on void.')
         if isinstance(iobject, Disabler):
             return iobject
-        index = _unholder(self.evaluate_statement(node.index))
+        index_holder = self.evaluate_statement(node.index)
+        if index_holder is None:
+            raise InvalidArguments('Cannot use void statement as index.')
+        index = _unholder(index_holder)
 
-        if iobject is None:
-            raise InterpreterException('Tried to evaluate indexing on None')
         iobject.current_node = node
         return self._holderify(iobject.operator_call(MesonOperator.INDEX, index))
 
     def function_call(self, node: mparser.FunctionNode) -> T.Optional[InterpreterObject]:
-        func_name = node.func_name
+        func_name = node.func_name.value
         (h_posargs, h_kwargs) = self.reduce_arguments(node.args)
         (posargs, kwargs) = self._unholder_args(h_posargs, h_kwargs)
         if is_disabled(posargs, kwargs) and func_name not in {'get_variable', 'set_variable', 'unset_variable', 'is_disabler'}:
@@ -459,6 +523,7 @@ class InterpreterBase:
                 func_args = flatten(posargs)
             if not getattr(func, 'no-second-level-holder-flattening', False):
                 func_args, kwargs = resolve_second_level_holders(func_args, kwargs)
+            self.current_node = node
             res = func(node, func_args, kwargs)
             return self._holderify(res) if res is not None else None
         else:
@@ -466,15 +531,15 @@ class InterpreterBase:
             return None
 
     def method_call(self, node: mparser.MethodNode) -> T.Optional[InterpreterObject]:
-        invokable = node.source_object
+        invocable = node.source_object
         obj: T.Optional[InterpreterObject]
-        if isinstance(invokable, mparser.IdNode):
-            object_display_name = f'variable "{invokable.value}"'
-            obj = self.get_variable(invokable.value)
+        if isinstance(invocable, mparser.IdNode):
+            object_display_name = f'variable "{invocable.value}"'
+            obj = self.get_variable(invocable.value)
         else:
-            object_display_name = invokable.__class__.__name__
-            obj = self.evaluate_statement(invokable)
-        method_name = node.name
+            object_display_name = invocable.__class__.__name__
+            obj = self.evaluate_statement(invocable)
+        method_name = node.name.value
         (h_args, h_kwargs) = self.reduce_arguments(node.args)
         (args, kwargs) = self._unholder_args(h_args, h_kwargs)
         if is_disabled(args, kwargs):
@@ -487,7 +552,7 @@ class InterpreterBase:
                 self.validate_extraction(obj.held_object)
             elif not isinstance(obj, Disabler):
                 raise InvalidArguments(f'Invalid operation "extract_objects" on {object_display_name} of type {type(obj).__name__}')
-        obj.current_node = node
+        obj.current_node = self.current_node = node
         res = obj.method_call(method_name, args, kwargs)
         return self._holderify(res) if res is not None else None
 
@@ -541,6 +606,7 @@ class InterpreterBase:
             reduced_val = self.evaluate_statement(val)
             if reduced_val is None:
                 raise InvalidArguments(f'Value of key {reduced_key} is void.')
+            self.current_node = key
             if duplicate_key_error and reduced_key in reduced_kw:
                 raise InvalidArguments(duplicate_key_error.format(reduced_key))
             reduced_kw[reduced_key] = reduced_val
@@ -569,7 +635,7 @@ class InterpreterBase:
                 Tried to assign values inside an argument list.
                 To specify a keyword argument, use : instead of =.
             '''))
-        var_name = node.var_name
+        var_name = node.var_name.value
         if not isinstance(var_name, str):
             raise InvalidArguments('Tried to assign value to a non-variable.')
         value = self.evaluate_statement(node.value)
@@ -580,7 +646,7 @@ class InterpreterBase:
 
     def set_variable(self, varname: str, variable: T.Union[TYPE_var, InterpreterObject], *, holderify: bool = False) -> None:
         if variable is None:
-            raise InvalidCode('Can not assign None to variable.')
+            raise InvalidCode('Can not assign void to variable.')
         if holderify:
             variable = self._holderify(variable)
         else:
@@ -589,8 +655,6 @@ class InterpreterBase:
                 raise mesonlib.MesonBugException(f'set_variable in InterpreterBase called with a non InterpreterObject {variable} of type {type(variable).__name__}')
         if not isinstance(varname, str):
             raise InvalidCode('First argument to set_variable must be a string.')
-        if re.match('[_a-zA-Z][_0-9a-zA-Z]*$', varname) is None:
-            raise InvalidCode('Invalid variable name: ' + varname)
         if varname in self.builtin:
             raise InvalidCode(f'Tried to overwrite internal variable "{varname}"')
         self.variables[varname] = variable

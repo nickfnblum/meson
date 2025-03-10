@@ -1,16 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2012-2019 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 from __future__ import annotations
 
 """Representations specific to the Renesas CC-RX compiler family."""
@@ -31,35 +21,25 @@ else:
     # do). This gives up DRYer type checking, with no runtime impact
     Compiler = object
 
-ccrx_buildtype_args = {
-    'plain': [],
-    'debug': [],
-    'debugoptimized': [],
-    'release': [],
-    'minsize': [],
-    'custom': [],
-}  # type: T.Dict[str, T.List[str]]
-
-ccrx_optimization_args = {
+ccrx_optimization_args: T.Dict[str, T.List[str]] = {
     '0': ['-optimize=0'],
     'g': ['-optimize=0'],
     '1': ['-optimize=1'],
     '2': ['-optimize=2'],
     '3': ['-optimize=max'],
     's': ['-optimize=2', '-size']
-}  # type: T.Dict[str, T.List[str]]
+}
 
-ccrx_debug_args = {
+ccrx_debug_args: T.Dict[bool, T.List[str]] = {
     False: [],
     True: ['-debug']
-}  # type: T.Dict[bool, T.List[str]]
+}
 
 
 class CcrxCompiler(Compiler):
 
     if T.TYPE_CHECKING:
         is_cross = True
-        can_compile_suffixes = set()  # type: T.Set[str]
 
     id = 'ccrx'
 
@@ -68,20 +48,18 @@ class CcrxCompiler(Compiler):
             raise EnvironmentException('ccrx supports only cross-compilation.')
         # Assembly
         self.can_compile_suffixes.add('src')
-        default_warn_args = []  # type: T.List[str]
-        self.warn_args = {'0': [],
-                          '1': default_warn_args,
-                          '2': default_warn_args + [],
-                          '3': default_warn_args + [],
-                          'everything': default_warn_args + []}  # type: T.Dict[str, T.List[str]]
+        default_warn_args: T.List[str] = []
+        self.warn_args: T.Dict[str, T.List[str]] = {
+            '0': [],
+            '1': default_warn_args,
+            '2': default_warn_args + [],
+            '3': default_warn_args + [],
+            'everything': default_warn_args + []}
 
     def get_pic_args(self) -> T.List[str]:
         # PIC support is not enabled by default for CCRX,
         # if users want to use it, they need to add the required arguments explicitly
         return []
-
-    def get_buildtype_args(self, buildtype: str) -> T.List[str]:
-        return ccrx_buildtype_args[buildtype]
 
     def get_pch_suffix(self) -> str:
         return 'pch'
@@ -109,7 +87,7 @@ class CcrxCompiler(Compiler):
 
     @classmethod
     def _unix_args_to_native(cls, args: T.List[str], info: MachineInfo) -> T.List[str]:
-        result = []
+        result: T.List[str] = []
         for i in args:
             if i.startswith('-D'):
                 i = '-define=' + i[2:]

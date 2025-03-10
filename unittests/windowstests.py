@@ -1,16 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2021 The Meson development team
-
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
 import subprocess
 import re
@@ -28,8 +17,9 @@ import mesonbuild.coredata
 import mesonbuild.modules.gnome
 from mesonbuild.mesonlib import (
     MachineChoice, is_windows, is_cygwin, python_command, version_compare,
-    EnvironmentException, OptionKey
+    EnvironmentException
 )
+from mesonbuild.options import OptionKey
 from mesonbuild.compilers import (
     detect_c_compiler, detect_d_compiler, compiler_from_language,
 )
@@ -184,6 +174,99 @@ class WindowsTests(BasePlatformTests):
             # to the right reason).
             return
         self.build()
+
+    @skipIf(is_cygwin(), 'Test only applicable to Windows')
+    def test_genvslite(self):
+        # The test framework itself might be forcing a specific, non-ninja backend across a set of tests, which
+        # includes this test. E.g. -
+        #   > python.exe run_unittests.py --backend=vs WindowsTests
+        # Since that explicitly specifies a backend that's incompatible with (and essentially meaningless in
+        # conjunction with) 'genvslite', we should skip further genvslite testing.
+        if self.backend is not Backend.ninja:
+            raise SkipTest('Test only applies when using the Ninja backend')
+
+        testdir = os.path.join(self.unit_test_dir, '118 genvslite')
+
+        env = get_fake_env(testdir, self.builddir, self.prefix)
+        cc = detect_c_compiler(env, MachineChoice.HOST)
+        if cc.get_argument_syntax() != 'msvc':
+            raise SkipTest('Test only applies when MSVC tools are available.')
+
+        # We want to run the genvslite setup. I.e. -
+        #    meson setup --genvslite vs2022 ...
+        # which we should expect to generate the set of _debug/_debugoptimized/_release suffixed
+        # build directories.  Then we want to check that the solution/project build hooks (like clean,
+        # build, and rebuild) end up ultimately invoking the 'meson compile ...' of the appropriately
+        # suffixed build dir, for which we need to use 'msbuild.exe'
+
+        # Find 'msbuild.exe'
+        msbuildprog = ExternalProgram('msbuild.exe')
+        self.assertTrue(msbuildprog.found(), msg='msbuild.exe not found')
+
+        # Setup with '--genvslite ...'
+        self.new_builddir()
+
+        # Firstly, we'd like to check that meson errors if the user explicitly specifies a non-ninja backend
+        # during setup.
+        with self.assertRaises(subprocess.CalledProcessError) as cm:
+            self.init(testdir, extra_args=['--genvslite', 'vs2022', '--backend', 'vs'])
+        self.assertIn("specifying a non-ninja backend conflicts with a 'genvslite' setup", cm.exception.stdout)
+
+        # Wrap the following bulk of setup and msbuild invocation testing in a try-finally because any exception,
+        # failure, or success must always clean up any of the suffixed build dir folders that may have been generated.
+        try:
+            # Since this
+            self.init(testdir, extra_args=['--genvslite', 'vs2022'])
+            # We need to bear in mind that the BasePlatformTests framework creates and cleans up its own temporary
+            # build directory.  However, 'genvslite' creates a set of suffixed build directories which we'll have
+            # to clean up ourselves. See 'finally' block below.
+
+            # We intentionally skip the -
+            #   self.build()
+            # step because we're wanting to test compilation/building through the solution/project's interface.
+
+            # Execute the debug and release builds through the projects 'Build' hooks
+            genvslite_vcxproj_path = str(os.path.join(self.builddir+'_vs', 'genvslite@exe.vcxproj'))
+            # This use-case of invoking the .sln/.vcxproj build hooks, not through Visual Studio itself, but through
+            # 'msbuild.exe', in a VS tools command prompt environment (e.g. "x64 Native Tools Command Prompt for VS 2022"), is a
+            # problem:  Such an environment sets the 'VSINSTALLDIR' variable which, mysteriously, has the side-effect of causing
+            # the spawned 'meson compile' command to fail to find 'ninja' (and even when ninja can be found elsewhere, all the
+            # compiler binaries that ninja wants to run also fail to be found).  The PATH environment variable in the child python
+            # (and ninja) processes are fundamentally stripped down of all the critical search paths required to run the ninja
+            # compile work ... ONLY when 'VSINSTALLDIR' is set;  without 'VSINSTALLDIR' set, the meson compile command does search
+            # for and find ninja (ironically, it finds it under the path where VSINSTALLDIR pointed!).
+            # For the above reason, this testing works around this bizarre behaviour by temporarily removing any 'VSINSTALLDIR'
+            # variable, prior to invoking the builds -
+            current_env = os.environ.copy()
+            current_env.pop('VSINSTALLDIR', None)
+            subprocess.check_call(
+                ['msbuild', '-target:Build', '-property:Configuration=debug', genvslite_vcxproj_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=current_env)
+            subprocess.check_call(
+                ['msbuild', '-target:Build', '-property:Configuration=release', genvslite_vcxproj_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=current_env)
+
+            # Check this has actually built the appropriate exes
+            exe_path = str(os.path.join(self.builddir+'_debug', 'genvslite.exe'))
+            self.assertTrue(os.path.exists(exe_path))
+            rc = subprocess.run([exe_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            self.assertEqual(rc.returncode, 0, rc.stdout + rc.stderr)
+            output_debug = rc.stdout
+            self.assertEqual(output_debug, b'Debug\r\n' )
+            exe_path = str(os.path.join(self.builddir+'_release', 'genvslite.exe'))
+            self.assertTrue(os.path.exists(exe_path))
+            output_release = subprocess.check_output([exe_path])
+            self.assertEqual( output_release, b'Non-debug\r\n' )
+
+        finally:
+            # Clean up our special suffixed temporary build dirs
+            suffixed_build_dirs = glob(self.builddir+'_*', recursive=False)
+            for build_dir in suffixed_build_dirs:
+                shutil.rmtree(build_dir)
 
     def test_install_pdb_introspection(self):
         testdir = os.path.join(self.platform_test_dir, '1 basic')

@@ -1,22 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2016-2021 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+from __future__ import annotations
 import subprocess
 import tempfile
 import os
 import shutil
 import unittest
+import typing as T
 from contextlib import contextmanager
 
 from mesonbuild.mesonlib import (
@@ -45,10 +36,10 @@ def no_pkgconfig():
     old_which = shutil.which
     old_search = ExternalProgram._search
 
-    def new_search(self, name, search_dir):
+    def new_search(self, name, search_dirs, exclude_paths):
         if name == 'pkg-config':
             return [None]
-        return old_search(self, name, search_dir)
+        return old_search(self, name, search_dirs, exclude_paths)
 
     def new_which(cmd, *kwargs):
         if cmd == 'pkg-config':
@@ -78,18 +69,21 @@ class FailureTests(BasePlatformTests):
         super().setUp()
         self.srcdir = os.path.realpath(tempfile.mkdtemp())
         self.mbuild = os.path.join(self.srcdir, 'meson.build')
-        self.moptions = os.path.join(self.srcdir, 'meson_options.txt')
+        self.moptions = os.path.join(self.srcdir, 'meson.options')
+        if not os.path.exists(self.moptions):
+            self.moptions = os.path.join(self.srcdir, 'meson_options.txt')
 
     def tearDown(self):
         super().tearDown()
         windows_proof_rmtree(self.srcdir)
 
-    def assertMesonRaises(self, contents, match, *,
-                          extra_args=None,
-                          langs=None,
-                          meson_version=None,
-                          options=None,
-                          override_envvars=None):
+    def assertMesonRaises(self, contents: str,
+                          match: T.Union[str, T.Pattern[str]], *,
+                          extra_args: T.Optional[T.List[str]] = None,
+                          langs: T.Optional[T.List[str]] = None,
+                          meson_version: T.Optional[str] = None,
+                          options: T.Optional[str] = None,
+                          override_envvars: T.Optional[T.MutableMapping[str, str]] = None) -> None:
         '''
         Assert that running meson configure on the specified @contents raises
         a error message matching regex @match.
@@ -240,26 +234,33 @@ class FailureTests(BasePlatformTests):
         dep = declare_dependency(dependencies : zlib_dep)
         dep.get_pkgconfig_variable('foo')
         '''
-        self.assertMesonRaises(code, "Method.*pkgconfig.*is invalid.*internal")
+        self.assertMesonRaises(code, ".*is not a pkgconfig dependency")
         code = '''zlib_dep = dependency('zlib', required : false)
         dep = declare_dependency(dependencies : zlib_dep)
         dep.get_configtool_variable('foo')
         '''
-        self.assertMesonRaises(code, "Method.*configtool.*is invalid.*internal")
+        self.assertMesonRaises(code, ".* is not a config-tool dependency")
 
-    def test_objc_cpp_detection(self):
+    def test_objc_detection(self) -> None:
         '''
         Test that when we can't detect objc or objcpp, we fail gracefully.
         '''
         env = get_fake_env()
         try:
             detect_objc_compiler(env, MachineChoice.HOST)
+        except EnvironmentException as e:
+            self.assertRegex(str(e), r"(Unknown compiler|GCC was not built with support)")
+        else:
+            raise unittest.SkipTest('Working objective-c Compiler found, cannot test error.')
+
+    def test_objcpp_detection(self) -> None:
+        env = get_fake_env()
+        try:
             detect_objcpp_compiler(env, MachineChoice.HOST)
-        except EnvironmentException:
-            code = "add_languages('objc')\nadd_languages('objcpp')"
-            self.assertMesonRaises(code, "Unknown compiler")
-            return
-        raise unittest.SkipTest("objc and objcpp found, can't test detection failure")
+        except EnvironmentException as e:
+            self.assertRegex(str(e), r"(Unknown compiler|GCC was not built with support)")
+        else:
+            raise unittest.SkipTest('Working objective-c++ Compiler found, cannot test error.')
 
     def test_subproject_variables(self):
         '''
@@ -390,3 +391,8 @@ class FailureTests(BasePlatformTests):
     def test_error_func(self):
         self.assertMesonRaises("error('a', 'b', ['c', ['d', {'e': 'f'}]], 'g')",
                                r"Problem encountered: a b \['c', \['d', {'e' : 'f'}\]\] g")
+
+    def test_compiler_cache_without_compiler(self):
+        self.assertMesonRaises('',
+                               'Compiler cache specified without compiler: ccache',
+                               override_envvars={'CC': 'ccache'})

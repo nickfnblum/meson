@@ -4,7 +4,7 @@ libsources = ['meson-sample.c', 'meson-sample.h']
 lib2sources = ['meson-sample2.c', 'meson-sample2.h']
 
 gen_source = custom_target(
-  'meson_smaple3.h',
+  'meson_sample3.h',
   input : 'meson-sample.h',
   output : 'meson-sample3.h',
   command : [find_program('copy.py'), '@INPUT@', '@OUTPUT@'],
@@ -14,6 +14,7 @@ gen_source = custom_target(
 girlib = shared_library(
   'gir_lib',
   sources : libsources,
+  c_args: '-DMESON_TEST_2',
   dependencies : [gobj, dep1_dep],
   install : true
 )
@@ -28,6 +29,7 @@ girlib2 = shared_library(
 girexe = executable(
   'girprog',
   sources : 'prog.c',
+  c_args: '-DMESON_TEST_2',
   dependencies : [glib, gobj, gir, dep1_dep],
   link_with : girlib
 )
@@ -37,6 +39,7 @@ fake_dep = dependency('no-way-this-exists', required: false)
 gnome.generate_gir(
   girlib, girlib2,
   sources : [libsources, lib2sources, gen_source],
+  env : {'CPPFLAGS': '-DMESON_TEST_2'},
   nsversion : '1.0',
   namespace : 'Meson',
   symbol_prefix : 'meson',
@@ -44,6 +47,7 @@ gnome.generate_gir(
   includes : ['GObject-2.0', 'MesonDep1-1.0'],
   # dep1_dep pulls in dep2_dep for us
   dependencies : [[fake_dep, dep1_dep]],
+  doc_format: 'gtk-doc-markdown',
   install : true,
   build_by_default : true,
 )

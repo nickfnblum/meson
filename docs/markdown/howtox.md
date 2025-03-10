@@ -166,7 +166,7 @@ execute permissions, the generated file will have them too.
 First initialize the build directory with this command.
 
 ```console
-$ meson <other flags> -Db_coverage=true
+$ meson setup <other flags> -Db_coverage=true
 ```
 
 Then issue the following commands.
@@ -174,7 +174,7 @@ Then issue the following commands.
 ```console
 $ meson compile
 $ meson test
-$ meson compile coverage-html (or coverage-xml)
+$ ninja coverage-html (or coverage-xml)
 ```
 
 The coverage report can be found in the meson-logs subdirectory.
@@ -197,12 +197,12 @@ This causes all subsequent builds to use this command line argument.
 
 ## Use address sanitizer
 
-Clang comes with a selection of analysis tools such as the [address
+Clang and gcc come with a selection of analysis tools such as the [address
 sanitizer](https://clang.llvm.org/docs/AddressSanitizer.html). Meson
 has native support for these with the `b_sanitize` option.
 
 ```console
-$ meson <other options> -Db_sanitize=address
+$ meson setup <other options> -Db_sanitize=address
 ```
 
 After this you just compile your code and run the test suite. Address
@@ -238,6 +238,26 @@ And then pass it through the variable (remember to use absolute path):
 ```console
 $ SCANBUILD=$(pwd)/my-scan-build.sh ninja -C builddir scan-build
 ```
+
+## Use clippy
+
+If your project includes Rust targets, you can invoke clippy like this:
+
+```console
+$ meson setup builddir
+$ ninja -C builddir clippy
+```
+
+Clippy will also obey the `werror` [builtin option](Builtin-options.md#core-options).
+
+By default Meson uses as many concurrent processes as there are cores
+on the test machine. You can override this with the environment
+variable `MESON_NUM_PROCESSES`.
+
+Meson will look for `clippy-driver` in the same directory as `rustc`,
+or try to invoke it using `rustup` if `rustc` points to a `rustup`
+binary.  If `clippy-driver` is not detected properly, you can add it to
+a [machine file](Machine-files.md).
 
 ## Use profile guided optimization
 
@@ -323,3 +343,24 @@ executable(
   deps : [my_dep]
 )
 ```
+
+## Exclude a file from unity builds
+
+If your project supports unity builds, you should fix any bugs that crop up when
+source files are concatenated together.
+Sometimes this isn't possible, though, for example if the source files are
+generated.
+
+In this case, you can put them in a separate static library build target and
+override the unity setting.
+
+```meson
+generated_files = ...
+unityproof_lib = static_library('unityproof', generated_files,
+  override_options : ['unity=off'])
+
+main_exe = executable('main', main_sources, link_with : unityproof_lib)
+```
+
+To link the static library into another library target, you may need to use
+`link_whole` instead of `link_with`.
