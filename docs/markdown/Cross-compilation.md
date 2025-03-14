@@ -14,6 +14,7 @@ targeting 64-bit Windows could be:
 c = 'x86_64-w64-mingw32-gcc'
 cpp = 'x86_64-w64-mingw32-g++'
 ar = 'x86_64-w64-mingw32-ar'
+windres = 'x86_64-w64-mingw32-windres'
 strip = 'x86_64-w64-mingw32-strip'
 exe_wrapper = 'wine64'
 
@@ -84,7 +85,7 @@ their user interface much more complex.
 
 The most complicated case is when you cross-compile a cross compiler.
 As an example you can, on a Linux machine, generate a cross compiler
-that runs on Windows but produces binaries on MIPS Linux. In this case
+that runs on Windows but produces binaries for MIPS Linux. In this case
 *build machine* is x86 Linux, *host machine* is x86 Windows and
 *target machine* is MIPS Linux. This setup is known as the [Canadian
 Cross](https://en.wikipedia.org/wiki/Cross_compiler#Canadian_Cross).
@@ -212,6 +213,8 @@ target machines look the same. Here is a sample for host machine.
 ```ini
 [host_machine]
 system = 'windows'
+subsystem = 'windows'
+kernel = 'nt'
 cpu_family = 'x86'
 cpu = 'i686'
 endian = 'little'
@@ -221,9 +224,13 @@ These values define the machines sufficiently for cross compilation
 purposes. The corresponding target definition would look the same but
 have `target_machine` in the header. These values are available in
 your Meson scripts. There are three predefined variables called,
-surprisingly, [[@build_machine]], [[@host_machine]] and [[@target_machine]].
-Determining the operating system of your host machine is simply a
-matter of calling `host_machine.system()`.
+surprisingly, [[@build_machine]], [[@host_machine]] and
+[[@target_machine]]. Determining the operating system of your host
+machine is simply a matter of calling `host_machine.system()`.
+Starting from version 1.2.0 you can get more fine grained information
+using the `.subsystem()` and `.kernel()` methods. The return values of
+these functions are documented in [the reference table
+page](Reference-tables.md).
 
 There are two different values for the CPU. The first one is
 `cpu_family`. It is a general type of the CPU. This should have a
@@ -250,7 +257,7 @@ to be the host machine.
 Once you have the cross file, starting a build is simple
 
 ```console
-$ meson srcdir builddir --cross-file cross_file.txt
+$ meson setup builddir --cross-file cross_file.txt
 ```
 
 Once configuration is done, compilation is started by invoking `meson compile`
@@ -332,7 +339,7 @@ scratch.
 ## Custom data
 
 You can store arbitrary data in `properties` and access them from your
-Meson files. As an example if you cross file has this:
+Meson files. As an example if your cross file has this:
 
 ```ini
 [properties]

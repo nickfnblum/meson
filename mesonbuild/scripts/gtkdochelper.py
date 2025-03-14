@@ -1,22 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2015-2016 The Meson development team
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-
-#     http://www.apache.org/licenses/LICENSE-2.0
-
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+from __future__ import annotations
 
 import sys, os
 import subprocess
 import shutil
 import argparse
-from ..mesonlib import MesonException, Popen_safe, is_windows, is_cygwin, split_args
+from ..mesonlib import (
+    MesonException, Popen_safe, is_windows, is_cygwin, is_parent_path,
+    split_args,
+)
 from . import destdir_join
 import typing as T
 
@@ -121,7 +115,7 @@ def build_gtkdoc(source_root: str, build_root: str, doc_subdir: str, src_subdirs
         # FIXME: Use mesonlib.File objects so we don't need to do this
         if not os.path.isabs(f):
             f = os.path.join(doc_src, f)
-        elif os.path.commonpath([f, build_root]) == build_root:
+        elif is_parent_path(build_root, f):
             continue
         shutil.copyfile(f, os.path.join(abs_out, os.path.basename(f)))
 

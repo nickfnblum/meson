@@ -1,25 +1,38 @@
+from __future__ import annotations
+
 import os, subprocess
 import argparse
 import tempfile
 import shutil
 import itertools
+import typing as T
 
 from pathlib import Path
-from . import build, minstall, dependencies
-from .mesonlib import MesonException, RealPathAction, is_windows, setup_vsenv, OptionKey, quote_arg, get_wine_shortpath
+from . import build, minstall
+from .mesonlib import (EnvironmentVariables, MesonException, join_args, is_windows, setup_vsenv,
+                       get_wine_shortpath, MachineChoice, relpath)
+from .options import OptionKey
 from . import mlog
 
-import typing as T
+
 if T.TYPE_CHECKING:
-    from .backends import InstallData
+    from .backend.backends import InstallData
 
 POWERSHELL_EXES = {'pwsh.exe', 'powershell.exe'}
 
+# Note: when adding arguments, please also add them to the completion
+# scripts in $MESONSRC/data/shell-completions/
 def add_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument('-C', dest='wd', action=RealPathAction,
-                        help='Directory to cd into before running')
-    parser.add_argument('--dump', action='store_true',
-                        help='Only print required environment (Since 0.62.0)')
+    parser.add_argument('-C', dest='builddir', type=Path, default='.',
+                        help='Path to build directory')
+    parser.add_argument('--workdir', '-w', type=Path, default=None,
+                        help='Directory to cd into before running (default: builddir, Since 1.0.0)')
+    parser.add_argument('--dump', nargs='?', const=True,
+                        help='Only print required environment (Since 0.62.0) ' +
+                             'Takes an optional file path (Since 1.1.0)')
+    parser.add_argument('--dump-format', default='export',
+                        choices=['sh', 'export', 'vscode'],
+                        help='Format used with --dump (Since 1.1.0)')
     parser.add_argument('devcmd', nargs=argparse.REMAINDER, metavar='command',
                         help='Command to run in developer environment (default: interactive shell)')
 
@@ -45,15 +58,20 @@ def reduce_winepath(env: T.Dict[str, str]) -> None:
     env['WINEPATH'] = get_wine_shortpath([winecmd], winepath.split(';'))
     mlog.log('Meson detected wine and has set WINEPATH accordingly')
 
-def get_env(b: build.Build) -> T.Tuple[T.Dict[str, str], T.Set[str]]:
-    extra_env = build.EnvironmentVariables()
+def get_env(b: build.Build, dump_fmt: T.Optional[str]) -> T.Tuple[T.Dict[str, str], T.Set[str]]:
+    extra_env = EnvironmentVariables()
     extra_env.set('MESON_DEVENV', ['1'])
     extra_env.set('MESON_PROJECT_NAME', [b.project_name])
 
-    env = os.environ.copy()
+    sysroot = b.environment.properties[MachineChoice.HOST].get_sys_root()
+    if sysroot:
+        extra_env.set('QEMU_LD_PREFIX', [sysroot])
+
+    env = {} if dump_fmt else os.environ.copy()
+    default_fmt = '${0}' if dump_fmt in {'sh', 'export'} else None
     varnames = set()
     for i in itertools.chain(b.devenv, {extra_env}):
-        env = i.get_env(env)
+        env = i.get_env(env, default_fmt)
         varnames |= i.get_names()
 
     reduce_winepath(env)
@@ -61,16 +79,17 @@ def get_env(b: build.Build) -> T.Tuple[T.Dict[str, str], T.Set[str]]:
     return env, varnames
 
 def bash_completion_files(b: build.Build, install_data: 'InstallData') -> T.List[str]:
+    from .dependencies.pkgconfig import PkgConfigDependency
     result = []
-    dep = dependencies.PkgConfigDependency('bash-completion', b.environment,
-                                           {'required': False, 'silent': True, 'version': '>=2.10'})
+    dep = PkgConfigDependency('bash-completion', b.environment,
+                              {'required': False, 'silent': True, 'version': '>=2.10'})
     if dep.found():
-        prefix = b.environment.coredata.get_option(OptionKey('prefix'))
+        prefix = b.environment.coredata.optstore.get_value_for(OptionKey('prefix'))
         assert isinstance(prefix, str), 'for mypy'
-        datadir = b.environment.coredata.get_option(OptionKey('datadir'))
+        datadir = b.environment.coredata.optstore.get_value_for(OptionKey('datadir'))
         assert isinstance(datadir, str), 'for mypy'
         datadir_abs = os.path.join(prefix, datadir)
-        completionsdir = dep.get_variable(pkgconfig='completionsdir', pkgconfig_define=['datadir', datadir_abs])
+        completionsdir = dep.get_variable(pkgconfig='completionsdir', pkgconfig_define=(('datadir', datadir_abs),))
         assert isinstance(completionsdir, str), 'for mypy'
         completionsdir_path = Path(completionsdir)
         for f in install_data.data:
@@ -90,7 +109,7 @@ def add_gdb_auto_load(autoload_path: Path, gdb_helper: str, fname: Path) -> None
     except (FileExistsError, shutil.SameFileError):
         pass
 
-def write_gdb_script(privatedir: Path, install_data: 'InstallData') -> None:
+def write_gdb_script(privatedir: Path, install_data: 'InstallData', workdir: Path) -> None:
     if not shutil.which('gdb'):
         return
     bdir = privatedir.parent
@@ -120,28 +139,55 @@ def write_gdb_script(privatedir: Path, install_data: 'InstallData') -> None:
             gdbinit_path.write_text(gdbinit_line, encoding='utf-8')
             first_time = True
         if first_time:
-            mlog.log('Meson detected GDB helpers and added config in', mlog.bold(str(gdbinit_path)))
+            gdbinit_path = gdbinit_path.resolve()
+            workdir_path = workdir.resolve()
+            rel_path = Path(relpath(gdbinit_path, workdir_path))
+            mlog.log('Meson detected GDB helpers and added config in', mlog.bold(str(rel_path)))
+            mlog.log('To load it automatically you might need to:')
+            mlog.log(' - Add', mlog.bold(f'add-auto-load-safe-path {gdbinit_path.parent}'),
+                     'in', mlog.bold('~/.gdbinit'))
+            if gdbinit_path.parent != workdir_path:
+                mlog.log(' - Change current workdir to', mlog.bold(str(rel_path.parent)),
+                         'or use', mlog.bold(f'--init-command {rel_path}'))
+
+def dump(devenv: T.Dict[str, str], varnames: T.Set[str], dump_format: T.Optional[str], output: T.Optional[T.TextIO] = None) -> None:
+    for name in varnames:
+        print(f'{name}="{devenv[name]}"', file=output)
+        if dump_format == 'export':
+            print(f'export {name}', file=output)
 
 def run(options: argparse.Namespace) -> int:
-    privatedir = Path(options.wd) / 'meson-private'
+    privatedir = Path(options.builddir) / 'meson-private'
     buildfile = privatedir / 'build.dat'
     if not buildfile.is_file():
-        raise MesonException(f'Directory {options.wd!r} does not seem to be a Meson build directory.')
-    b = build.load(options.wd)
+        raise MesonException(f'Directory {options.builddir!r} does not seem to be a Meson build directory.')
+    b = build.load(options.builddir)
+    workdir = options.workdir or options.builddir
 
-    devenv, varnames = get_env(b)
+    need_vsenv = T.cast('bool', b.environment.coredata.optstore.get_value_for(OptionKey('vsenv')))
+    setup_vsenv(need_vsenv) # Call it before get_env to get vsenv vars as well
+    dump_fmt = options.dump_format if options.dump else None
+    devenv, varnames = get_env(b, dump_fmt)
     if options.dump:
         if options.devcmd:
             raise MesonException('--dump option does not allow running other command.')
-        for name in varnames:
-            print(f'{name}={quote_arg(devenv[name])}')
-            print(f'export {name}')
+        if options.dump is True:
+            dump(devenv, varnames, dump_fmt)
+        else:
+            with open(options.dump, "w", encoding='utf-8') as output:
+                dump(devenv, varnames, dump_fmt, output)
         return 0
 
-    install_data = minstall.load_install_data(str(privatedir / 'install.dat'))
-    write_gdb_script(privatedir, install_data)
+    if b.environment.need_exe_wrapper():
+        m = 'An executable wrapper could be required'
+        exe_wrapper = b.environment.get_exe_wrapper()
+        if exe_wrapper:
+            cmd = ' '.join(exe_wrapper.get_command())
+            m += f': {cmd}'
+        mlog.log(m)
 
-    setup_vsenv(b.need_vsenv)
+    install_data = minstall.load_install_data(str(privatedir / 'install.dat'))
+    write_gdb_script(privatedir, install_data, workdir)
 
     args = options.devcmd
     if not args:
@@ -180,10 +226,9 @@ def run(options: argparse.Namespace) -> int:
         args[0] = abs_path or args[0]
 
     try:
-        return subprocess.call(args, close_fds=False,
-                               env=devenv,
-                               cwd=options.wd)
-    except subprocess.CalledProcessError as e:
-        return e.returncode
+        os.chdir(workdir)
+        os.execvpe(args[0], args, env=devenv)
     except FileNotFoundError:
         raise MesonException(f'Command not found: {args[0]}')
+    except OSError as e:
+        raise MesonException(f'Command `{join_args(args)}` failed to execute: {e}')

@@ -1,19 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
 # Copyright 2019 The Meson development team
+# Copyright © 2023-2025 Intel Corporation
 
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+from __future__ import annotations
+import typing as T
 
-#     http://www.apache.org/licenses/LICENSE-2.0
+from mesonbuild.templates.sampleimpl import FileHeaderImpl
 
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-from mesonbuild.templates.sampleimpl import SampleImpl
-import re
-
+if T.TYPE_CHECKING:
+    from ..minit import Arguments
 
 hello_cpp_template = '''#include <iostream>
 
@@ -29,13 +24,23 @@ int main(int argc, char **argv) {{
 }}
 '''
 
-hello_cpp_meson_template = '''project('{project_name}', 'cpp',
+hello_cpp_meson_template = '''project(
+  '{project_name}',
+  'cpp',
   version : '{version}',
-  default_options : ['warning_level=3',
-                     'cpp_std=c++14'])
+  meson_version : '>= {meson_version}',
+  default_options : ['warning_level=3', 'cpp_std=c++14'],
+)
 
-exe = executable('{exe_name}', '{source_name}',
-  install : true)
+dependencies = [{dependencies}
+]
+
+exe = executable(
+  '{exe_name}',
+  '{source_name}',
+  install : true,
+  dependencies : dependencies,
+)
 
 test('basic', exe)
 '''
@@ -101,28 +106,45 @@ int main(int argc, char **argv) {{
 }}
 '''
 
-lib_cpp_meson_template = '''project('{project_name}', 'cpp',
+lib_cpp_meson_template = '''project(
+  '{project_name}',
+  'cpp',
   version : '{version}',
-  default_options : ['warning_level=3', 'cpp_std=c++14'])
+  meson_version : '>= {meson_version}',
+  default_options : ['warning_level=3', 'cpp_std=c++14'],
+)
+
+dependencies = [{dependencies}
+]
 
 # These arguments are only used to build the shared library
 # not the executables that use the library.
 lib_args = ['-DBUILDING_{utoken}']
 
-shlib = shared_library('{lib_name}', '{source_file}',
+lib = library(
+  '{lib_name}',
+  '{source_file}',
   install : true,
-  cpp_args : lib_args,
+  cpp_shared_args : lib_args,
   gnu_symbol_visibility : 'hidden',
+  dependencies : dependencies,
 )
 
-test_exe = executable('{test_exe_name}', '{test_source_file}',
-  link_with : shlib)
+test_exe = executable(
+  '{test_exe_name}',
+  '{test_source_file}',
+  dependencies : dependencies,
+  link_with : lib,
+)
 test('{test_name}', test_exe)
 
 # Make this library usable as a Meson subproject.
 {ltoken}_dep = declare_dependency(
-  include_directories: include_directories('.'),
-  link_with : shlib)
+  include_directories : include_directories('.'),
+  dependencies : dependencies,
+  link_with : lib,
+)
+meson.override_dependency('{project_name}', {ltoken}_dep)
 
 # Make this library usable from the system's
 # package manager.
@@ -130,56 +152,24 @@ install_headers('{header_file}', subdir : '{header_dir}')
 
 pkg_mod = import('pkgconfig')
 pkg_mod.generate(
-  name : '{project_name}',
-  filebase : '{ltoken}',
+  lib,
   description : 'Meson sample project.',
   subdirs : '{header_dir}',
-  libraries : shlib,
-  version : '{version}',
 )
 '''
 
 
-class CppProject(SampleImpl):
-    def __init__(self, options):
-        super().__init__()
-        self.name = options.name
-        self.version = options.version
+class CppProject(FileHeaderImpl):
 
-    def create_executable(self) -> None:
-        lowercase_token = re.sub(r'[^a-z0-9]', '_', self.name.lower())
-        source_name = lowercase_token + '.cpp'
-        open(source_name, 'w', encoding='utf-8').write(hello_cpp_template.format(project_name=self.name))
-        open('meson.build', 'w', encoding='utf-8').write(
-            hello_cpp_meson_template.format(project_name=self.name,
-                                            exe_name=lowercase_token,
-                                            source_name=source_name,
-                                            version=self.version))
+    source_ext = 'cpp'
+    header_ext = 'hpp'
+    exe_template = hello_cpp_template
+    exe_meson_template = hello_cpp_meson_template
+    lib_template = lib_cpp_template
+    lib_header_template = lib_hpp_template
+    lib_test_template = lib_cpp_test_template
+    lib_meson_template = lib_cpp_meson_template
 
-    def create_library(self) -> None:
-        lowercase_token = re.sub(r'[^a-z0-9]', '_', self.name.lower())
-        uppercase_token = lowercase_token.upper()
-        class_name = uppercase_token[0] + lowercase_token[1:]
-        test_exe_name = lowercase_token + '_test'
-        namespace = lowercase_token
-        lib_hpp_name = lowercase_token + '.hpp'
-        lib_cpp_name = lowercase_token + '.cpp'
-        test_cpp_name = lowercase_token + '_test.cpp'
-        kwargs = {'utoken': uppercase_token,
-                  'ltoken': lowercase_token,
-                  'header_dir': lowercase_token,
-                  'class_name': class_name,
-                  'namespace': namespace,
-                  'header_file': lib_hpp_name,
-                  'source_file': lib_cpp_name,
-                  'test_source_file': test_cpp_name,
-                  'test_exe_name': test_exe_name,
-                  'project_name': self.name,
-                  'lib_name': lowercase_token,
-                  'test_name': lowercase_token,
-                  'version': self.version,
-                  }
-        open(lib_hpp_name, 'w', encoding='utf-8').write(lib_hpp_template.format(**kwargs))
-        open(lib_cpp_name, 'w', encoding='utf-8').write(lib_cpp_template.format(**kwargs))
-        open(test_cpp_name, 'w', encoding='utf-8').write(lib_cpp_test_template.format(**kwargs))
-        open('meson.build', 'w', encoding='utf-8').write(lib_cpp_meson_template.format(**kwargs))
+    def __init__(self, args: Arguments):
+        super().__init__(args)
+        self.meson_version = '1.3.0'
